@@ -31,6 +31,15 @@ test proves an unrelated tenant change cannot alter another tenant's semantic or
 config output.
 
 The closed F4 fixture adapter performs only deterministic semantic validation.
+
+## Batfish adapter boundary
+
+The typed Batfish snapshot/query boundary is dependency-free until a real
+executor is selected. Its synthetic fixture adapter is advisory only. Exact,
+immutable query plans and canonical answer hashes make evidence comparable, and
+parser gaps, incomplete coverage, `UNKNOWN`, `ERROR`, or null answers are
+reported as per-query advisory debt. A Batfish assessment is always
+`ADVISORY` and `release_eligible=false`; it does not make a release decision.
 Its results are labelled `STATIC`: a healthy baseline is `PASS`, each mapped
 invalid mutation is `FAIL`, and malformed fixtures, TestPack binding failures,
 or unsupported mutations are `UNKNOWN`. It records source identity, rule,
