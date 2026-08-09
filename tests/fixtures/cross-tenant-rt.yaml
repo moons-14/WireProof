@@ -1,0 +1,2 @@
+mutation: cross_tenant_rt
+expected_error: "cross-tenant RT sharing requires a shared-service EVPN instance"

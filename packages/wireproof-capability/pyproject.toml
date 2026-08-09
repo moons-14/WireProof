@@ -1,0 +1,9 @@
+[project]
+name = "wireproof-capability"
+version = "0.1.0"
+requires-python = ">=3.12,<3.13"
+dependencies = ["wireproof-core"]
+
+[build-system]
+requires = ["hatchling>=1.27"]
+build-backend = "hatchling.build"

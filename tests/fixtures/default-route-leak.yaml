@@ -1,0 +1,2 @@
+mutation: default_route_leak
+expected_error: "management export policy permits default route"

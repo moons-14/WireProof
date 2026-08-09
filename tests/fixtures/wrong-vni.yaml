@@ -1,0 +1,2 @@
+mutation: wrong_vni
+expected_error: "duplicate VNI"

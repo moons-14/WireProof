@@ -1,0 +1,12 @@
+[project]
+name = "wireproof-cli"
+version = "0.1.0"
+requires-python = ">=3.12,<3.13"
+dependencies = ["typer>=0.15,<1", "wireproof-capability", "wireproof-compiler", "wireproof-evidence", "wireproof-runtime"]
+
+[project.scripts]
+wireproof = "wireproof_cli.main:app"
+
+[build-system]
+requires = ["hatchling>=1.27"]
+build-backend = "hatchling.build"

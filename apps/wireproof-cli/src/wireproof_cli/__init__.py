@@ -1,0 +1,1 @@
+"""WireProof CLI composition layer."""

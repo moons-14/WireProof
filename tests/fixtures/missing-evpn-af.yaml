@@ -1,0 +1,2 @@
+mutation: missing_evpn_af
+expected_error: "EVPN participant requires l2vpn-evpn BGP session"

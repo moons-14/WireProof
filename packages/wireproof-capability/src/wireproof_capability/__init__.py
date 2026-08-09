@@ -1,0 +1,11 @@
+from enum import StrEnum
+
+
+class CapabilityState(StrEnum):
+    UNKNOWN = "UNKNOWN"
+    DOCUMENTED = "DOCUMENTED"
+    EXPOSED = "EXPOSED"
+    ACCEPTED = "ACCEPTED"
+    REALIZED = "REALIZED"
+    CONFORMANT = "CONFORMANT"
+    UNSUPPORTED = "UNSUPPORTED"

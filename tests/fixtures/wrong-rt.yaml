@@ -1,0 +1,2 @@
+mutation: wrong_rt
+expected_error: "import/export RTs must intersect"

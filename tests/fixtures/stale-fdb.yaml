@@ -1,0 +1,2 @@
+mutation: stale_fdb
+expected_error: "stale FDB entry"
