@@ -243,7 +243,6 @@ def test_recorded_adapter_is_closed_fake_only_and_preserves_mismatched_residue()
     plan = adapter.dry_plan(RuntimeOperation.DEPLOY, ownership)
 
     assert plan.execution_mode is ExecutionMode.FAKE
-    assert not plan.promotion_allowed
     assert plan.commands[0].argv == ("wireproof-runtime", "deploy", "--run-id", "run-a")
     residue = adapter.inspect_residue(
         (

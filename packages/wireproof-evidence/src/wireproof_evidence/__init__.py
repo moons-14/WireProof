@@ -1,6 +1,7 @@
 """Immutable, append-only evidence records for WireProof runs."""
 
 from enum import StrEnum
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -51,8 +52,59 @@ class EvidenceRecord(BaseModel):
     provenance_clauses: tuple[str, ...] = ()
     image_reference: str | None = None
     component_versions: tuple[str, ...] = ()
-    command_provenance: tuple[tuple[str, ...], ...] = ()
+    command_kinds: tuple[Literal["DEPLOY", "INSPECT", "DESTROY", "CAPTURE", "OBSERVE"], ...] = ()
 
-    @property
-    def promotion_allowed(self) -> bool:
-        return self.execution_mode is ExecutionMode.REAL and self.result is Result.PASS
+
+from wireproof_evidence.bundle import (  # noqa: E402
+    CaptureRef,
+    CaptureRole,
+    CheckPhase,
+    CheckResult,
+    ClauseCoverage,
+    CommandKind,
+    CommandTranscript,
+    ComponentProvenance,
+    CoverageAxis,
+    DeviationRef,
+    EvidenceBundle,
+    EvidenceBundlePayload,
+    EvidenceOwnership,
+    EvidenceRequirements,
+    ImageProvenance,
+    Observation,
+    RequiredCheck,
+    StructuralFinding,
+    StructuralFindingCode,
+    UnsupportedPlatformError,
+    canonical_json_bytes,
+    persist_bundle,
+)
+
+__all__ = [
+    "CaptureRef",
+    "CaptureRole",
+    "ClauseCoverage",
+    "CheckPhase",
+    "CheckResult",
+    "CommandKind",
+    "CommandTranscript",
+    "ComponentProvenance",
+    "CoverageAxis",
+    "DeviationRef",
+    "EvidenceBundle",
+    "EvidenceBundlePayload",
+    "EvidenceOwnership",
+    "EvidenceRecord",
+    "EvidenceRequirements",
+    "ImageProvenance",
+    "Observation",
+    "ExecutionMode",
+    "ReasonCode",
+    "Result",
+    "RequiredCheck",
+    "StructuralFinding",
+    "StructuralFindingCode",
+    "UnsupportedPlatformError",
+    "canonical_json_bytes",
+    "persist_bundle",
+]

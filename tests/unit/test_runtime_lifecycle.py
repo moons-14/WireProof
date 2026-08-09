@@ -45,7 +45,6 @@ def test_fake_happy_path_transcript_and_fake_cannot_promote() -> None:
         RuntimeCommand.destroy("run-1"),
     ]
     assert run.evidence[-1].execution_mode is ExecutionMode.FAKE
-    assert not run.evidence[-1].promotion_allowed
     assert run.evidence[0].semantic_ir_hash == "b" * 64
     assert run.evidence[0].artifact_hashes == ("c" * 64,)
     assert run.evidence[0].provenance_clauses == ("EVPN_M1",)
@@ -55,7 +54,7 @@ def test_fake_happy_path_transcript_and_fake_cannot_promote() -> None:
         "failure_scenario",
         "target_command_provenance",
     )
-    assert run.evidence[0].command_provenance == (RuntimeCommand.deploy("run-1").argv,)
+    assert run.evidence[0].command_kinds == ("DEPLOY",)
 
 
 @pytest.mark.parametrize("operation", list(RuntimeCommand.Operation))

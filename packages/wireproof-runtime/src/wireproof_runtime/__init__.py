@@ -82,10 +82,6 @@ class RecordedDryPlan:
     commands: tuple[RuntimeCommand, ...]
     execution_mode: ExecutionMode = ExecutionMode.FAKE
 
-    @property
-    def promotion_allowed(self) -> bool:
-        return False
-
 
 @dataclass(frozen=True)
 class ResidueInspection:
@@ -262,7 +258,7 @@ class LabRun:
             provenance_clauses=self._metadata.provenance_clauses,
             component_versions=self._metadata.component_versions,
             coverage=self._metadata.coverage,
-            command_provenance=(command.argv,) if command is not None else (),
+            command_kinds=(command.operation.value,) if command is not None else (),
         )
         self._evidence.append(record)
         return record
