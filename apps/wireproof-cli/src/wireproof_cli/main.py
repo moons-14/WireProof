@@ -15,7 +15,17 @@ app.add_typer(lab, name="lab")
 @app.command()
 def compile(plan: Path) -> None:
     """Validate a Feature Contract and emit its pure reference topology."""
-    typer.echo(json.dumps(compile_plan(load_plan(plan)), indent=2, sort_keys=True))
+    compiled = compile_plan(load_plan(plan))
+    typer.echo(
+        json.dumps(
+            {
+                key: value.model_dump(mode="json") if hasattr(value, "model_dump") else value
+                for key, value in compiled.items()
+            },
+            indent=2,
+            sort_keys=True,
+        )
+    )
 
 
 @lab.command("compile")

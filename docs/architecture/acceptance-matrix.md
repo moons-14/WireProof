@@ -27,3 +27,8 @@ is `BLOCKED`; documentation alone does not satisfy runtime criteria.
 
 This matrix is normative. Implementation issues may add tests but may not
 weaken these criteria without an ADR update.
+
+The pure fake contract implements typed immutable image validation, command
+transcripts, label-scoped cleanup, frozen append-only evidence, and deterministic
+convergence timing. It is evidence for the pure portions of IMG/LAB/TEST/EVID/
+CLEAN only; real lab state remains `UNKNOWN`.

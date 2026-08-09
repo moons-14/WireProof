@@ -3,3 +3,7 @@
 **Decision:** use Containerlab, Docker/OCI and namespaces for reference labs.
 **Why:** it matches network topology lifecycle without inventing an orchestrator.
 **Consequences:** Lab CI needs a suitable Docker host; Pure CI remains Docker-free.
+
+**Pure fallback:** a fake runner models only the closed lifecycle command contract
+and produces non-promotable `FAKE` evidence. It neither probes Docker nor claims
+Containerlab execution.

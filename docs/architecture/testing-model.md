@@ -45,3 +45,13 @@ config output.
 
 At present gates 3–4 are `UNKNOWN`: Docker socket access was denied and
 Containerlab is unavailable in this environment.
+
+## Pure-runtime lifecycle contract
+
+Pure CI uses a closed, no-Docker fake runner only. Its commands are typed
+`DEPLOY`, `INSPECT`, and `DESTROY` program-built argv values; it can never
+promote a result. A run is label-scoped by both `managed_by=wireproof` and its
+exact `run_id`, so cleanup preserves unlabelled and mismatched resources.
+Lifecycle failures attempt cleanup, `CLEANUP_FAILED` is retryable with `down`,
+and an already-cleaned `down` is a no-op. `eventually` receives monotonic time
+and sleeping functions, records attempts/elapsed time, and uses no fixed sleep.
