@@ -1,7 +1,12 @@
 from __future__ import annotations
 
 import pytest
-from wireproof_compiler import compile_plan, compile_test_pack
+from wireproof_compiler import (
+    TestPack,
+    compile_plan,
+    compile_test_pack,
+    project_test_pack_for_tenant,
+)
 from wireproof_core import FeatureContract
 
 
@@ -117,3 +122,60 @@ def test_compile_plan_preserves_existing_output_when_adding_sibling_pack() -> No
     output = compile_plan(_plan())
     assert output["test_pack"] == compile_test_pack(_plan())
     assert output["reference_topology_hash"] == output["reference_artifact"].canonical_hash
+
+
+def test_project_test_pack_for_tenant_is_immutable_and_excludes_global_obligations() -> None:
+    pack = compile_test_pack(_plan())
+    projected = project_test_pack_for_tenant(pack, " tenant-a ")
+
+    assert projected is not pack
+    assert projected.parent_canonical_hash == pack.canonical_hash
+    assert projected.projection_tenant == "tenant-a"
+    assert projected == project_test_pack_for_tenant(pack, "tenant-a")
+    assert projected is project_test_pack_for_tenant(projected, "tenant-a")
+    assert all(clause.tenant == "tenant-a" for clause in projected.clauses)
+    assert all(clause.state == "UNEXECUTED" for clause in projected.clauses)
+    assert {clause.requirement_kind for clause in projected.clauses} == {"vni", "rd", "evpn", "vrf"}
+    assert {clause.source_identity for clause in projected.clauses} <= {
+        clause.source_identity for clause in pack.clauses
+    }
+
+
+def test_projected_test_pack_rejects_mixed_tenant_or_global_clauses() -> None:
+    pack = compile_test_pack(_plan())
+    projected = project_test_pack_for_tenant(pack, "tenant-a")
+    global_clause = next(clause for clause in pack.clauses if clause.tenant is None)
+
+    with pytest.raises(ValueError, match="must match projection_tenant"):
+        TestPack.model_validate(
+            {
+                **projected.model_dump(mode="json"),
+                "clauses": [*projected.clauses, global_clause],
+            }
+        )
+
+
+def test_test_pack_v1_artifacts_are_rejected() -> None:
+    serialized = compile_test_pack(_plan()).model_dump(mode="json")
+    serialized["schema_version"] = "wireproof-test-pack-1"
+
+    with pytest.raises(ValueError, match="wireproof-test-pack-2"):
+        TestPack.model_validate(serialized)
+
+
+def test_tenant_projection_is_deterministic_for_semantically_reordered_input() -> None:
+    source = _plan().model_dump(mode="json")
+    for key in ("vrfs", "evpn_instances", "l2_vnis", "l3_vnis"):
+        source[key].reverse()
+
+    assert project_test_pack_for_tenant(compile_test_pack(_plan()), "tenant-a").canonical_bytes == (
+        project_test_pack_for_tenant(
+            compile_test_pack(FeatureContract.model_validate(source)), "tenant-a"
+        ).canonical_bytes
+    )
+
+
+@pytest.mark.parametrize("tenant", ["", "   ", "unknown"])
+def test_project_test_pack_for_tenant_rejects_unknown_or_blank_tenants(tenant: str) -> None:
+    with pytest.raises(ValueError):
+        project_test_pack_for_tenant(compile_test_pack(_plan()), tenant)

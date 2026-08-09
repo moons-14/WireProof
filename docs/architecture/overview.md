@@ -6,6 +6,10 @@ WireProof establishes this closed loop:
 
 `PLAN → capability discovery → semantic compile → virtual conformance test → target dark stage → wiring → physical test → service activation`.
 
+The compiler can project a canonical `TestPack` into the unexecuted obligations for one
+tenant. This is a deterministic planning boundary only: it does not claim configuration,
+protocol, forwarding, capture, or runtime conformance.
+
 Milestone 1 ends at evidence-backed virtual conformance.  It must construct a
 two-spine/four-leaf, multi-tenant EVPN/VXLAN reference fabric from a Feature
 Contract and detect deliberately broken intent.  It has no target write path;
@@ -73,6 +77,12 @@ The compiler also emits a canonical `TestPack` beside the reference-topology out
 It is a declarative requirement list derived from validated semantic IR: every clause is
 explicitly `UNEXECUTED`, carries stable source identity/provenance, and has a structured
 expected condition.  Its SHA-256 hash is over its exact canonical serialized bytes.
+
+The emitted TestPack schema is `wireproof-test-pack-2`. Version 1 artifacts are not
+read-compatible: they are rejected rather than treating missing tenant and projection
+provenance fields as global/defaulted data. Recompile the Feature Contract to migrate a
+v1 artifact. A projected v2 pack contains only clauses whose `tenant` equals its
+`projection_tenant`.
 
 Test packs neither select or render a target nor contain runtime observations, diagnostics,
 or results.  Executors and evidence producers add those concerns later; this sibling output

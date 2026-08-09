@@ -5,7 +5,7 @@ import json
 import re
 from collections.abc import Collection, Mapping
 from pathlib import Path
-from typing import Any, Literal, cast
+from typing import Any, ClassVar, Literal, cast
 
 import yaml
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
@@ -29,7 +29,7 @@ FRR_IMAGE_REFERENCE = (
     "quay.io/frrouting/frr@sha256:17a66aa754b4f60d58fae6cf3c357b62cfb574beb2a4cacd26d50e3df8440b78"
 )
 CONTAINERLAB_SCHEMA = "containerlab-0.59.0"
-TEST_PACK_SCHEMA: Literal["wireproof-test-pack-1"] = "wireproof-test-pack-1"
+TEST_PACK_SCHEMA: Literal["wireproof-test-pack-2"] = "wireproof-test-pack-2"
 
 
 def _is_non_string_collection(value: object) -> bool:
@@ -231,6 +231,7 @@ class TestPackClause(BaseModel):
     state: Literal["UNEXECUTED"] = "UNEXECUTED"
     requirement_kind: Literal["vni", "rd", "evpn", "vrf", "vlan", "bgp"]
     source_identity: str = Field(min_length=1)
+    tenant: str | None = None
     provenance_clauses: tuple[str, ...]
     expected_condition: dict[str, Any]
 
@@ -245,6 +246,16 @@ class TestPackClause(BaseModel):
             return normalized
         return value
 
+    @field_validator("tenant")
+    @classmethod
+    def normalize_tenant(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("tenant must be nonempty when specified")
+        return normalized
+
 
 class TestPack(BaseModel):
     """Canonical compiler output describing requirements for a future executor.
@@ -253,12 +264,26 @@ class TestPack(BaseModel):
     data.  Those concerns belong to the runtime and evidence layers.
     """
 
+    __test__: ClassVar[bool] = False
+
     model_config = ConfigDict(frozen=True, extra="forbid")
-    schema_version: Literal["wireproof-test-pack-1"] = TEST_PACK_SCHEMA
+    schema_version: Literal["wireproof-test-pack-2"] = TEST_PACK_SCHEMA
     semantic_ir_hash: str
     clauses: tuple[TestPackClause, ...]
     canonical_ordering: Literal["clauses:id:lexicographic"] = "clauses:id:lexicographic"
     generator_identity: str | None = "wireproof-compiler"
+    parent_canonical_hash: str | None = None
+    projection_tenant: str | None = None
+
+    @field_validator("projection_tenant")
+    @classmethod
+    def normalize_projection_tenant(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("projection_tenant must be nonempty when specified")
+        return normalized
 
     @model_validator(mode="before")
     @classmethod
@@ -281,6 +306,17 @@ class TestPack(BaseModel):
         clause_ids = tuple(clause.id for clause in self.clauses)
         if len(clause_ids) != len(set(clause_ids)):
             raise ValueError("test pack clause identities must be unique")
+        if (self.parent_canonical_hash is None) != (self.projection_tenant is None):
+            raise ValueError("projection provenance fields must be specified together")
+        if self.projection_tenant is not None and any(
+            clause.tenant != self.projection_tenant for clause in self.clauses
+        ):
+            raise ValueError("projected test pack clauses must match projection_tenant")
+        if (
+            self.parent_canonical_hash is not None
+            and re.fullmatch(r"[0-9a-f]{64}", self.parent_canonical_hash) is None
+        ):
+            raise ValueError("parent_canonical_hash must be a lowercase SHA-256 digest")
         return self
 
     @property
@@ -338,12 +374,14 @@ def _test_pack_clause(
     identity: str,
     source: Any,
     provenance: tuple[str, ...],
+    tenant: str | None = None,
 ) -> TestPackClause:
     digest = hashlib.sha256(f"{kind}:{identity}".encode()).hexdigest()[:16]
     return TestPackClause(
         id=f"test.{kind}.{digest}",
         requirement_kind=kind,
         source_identity=identity,
+        tenant=tenant,
         provenance_clauses=provenance,
         expected_condition={
             "object_kind": kind,
@@ -357,15 +395,31 @@ def compile_test_pack(plan: FeatureContract) -> TestPack:
     if not isinstance(plan, FeatureContract):
         raise TypeError("compile_test_pack requires a validated FeatureContract")
     provenance = tuple(sorted(clause.id for clause in plan.clauses))
+    evpn_tenants = {entry.name: entry.tenant for entry in plan.evpn_instances}
+    vrf_tenants = {entry.name: entry.tenant for entry in plan.vrfs}
     clauses = [
-        *(_test_pack_clause("vni", f"l2:{entry.vni}", entry, provenance) for entry in plan.l2_vnis),
-        *(_test_pack_clause("vni", f"l3:{entry.vni}", entry, provenance) for entry in plan.l3_vnis),
-        *(_test_pack_clause("rd", entry.rd, entry, provenance) for entry in plan.evpn_instances),
         *(
-            _test_pack_clause("evpn", entry.name, entry, provenance)
+            _test_pack_clause(
+                "vni", f"l2:{entry.vni}", entry, provenance, evpn_tenants[entry.evpn_instance]
+            )
+            for entry in plan.l2_vnis
+        ),
+        *(
+            _test_pack_clause("vni", f"l3:{entry.vni}", entry, provenance, vrf_tenants[entry.vrf])
+            for entry in plan.l3_vnis
+        ),
+        *(
+            _test_pack_clause("rd", entry.rd, entry, provenance, entry.tenant)
             for entry in plan.evpn_instances
         ),
-        *(_test_pack_clause("vrf", entry.name, entry, provenance) for entry in plan.vrfs),
+        *(
+            _test_pack_clause("evpn", entry.name, entry, provenance, entry.tenant)
+            for entry in plan.evpn_instances
+        ),
+        *(
+            _test_pack_clause("vrf", entry.name, entry, provenance, entry.tenant)
+            for entry in plan.vrfs
+        ),
         *(_test_pack_clause("vlan", str(entry.id), entry, provenance) for entry in plan.vlans),
         *(
             _test_pack_clause(
@@ -385,6 +439,27 @@ def compile_test_pack(plan: FeatureContract) -> TestPack:
         ),
     ]
     return TestPack(semantic_ir_hash=_canonical_ir_hash(plan), clauses=tuple(clauses))
+
+
+def project_test_pack_for_tenant(pack: TestPack, tenant: str) -> TestPack:
+    """Return the unexecuted tenant-scoped obligations from a canonical TestPack."""
+    if not isinstance(pack, TestPack):
+        raise TypeError("project_test_pack_for_tenant requires a TestPack")
+    normalized_tenant = tenant.strip()
+    if not normalized_tenant:
+        raise ValueError("tenant must be nonempty")
+    known_tenants = {clause.tenant for clause in pack.clauses if clause.tenant is not None}
+    if normalized_tenant not in known_tenants:
+        raise ValueError(f"unknown tenant: {normalized_tenant}")
+    if pack.projection_tenant == normalized_tenant:
+        return pack
+    return TestPack(
+        semantic_ir_hash=pack.semantic_ir_hash,
+        clauses=tuple(clause for clause in pack.clauses if clause.tenant == normalized_tenant),
+        generator_identity=pack.generator_identity,
+        parent_canonical_hash=pack.canonical_hash,
+        projection_tenant=normalized_tenant,
+    )
 
 
 class RuntimeMetadata(BaseModel):

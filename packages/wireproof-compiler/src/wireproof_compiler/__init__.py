@@ -12,6 +12,7 @@ from .compile import (
     compile_plan,
     compile_test_pack,
     load_plan,
+    project_test_pack_for_tenant,
 )
 from .static_evaluator import (
     StaticEvaluationResult,
@@ -34,6 +35,7 @@ __all__ = [
     "compile_plan",
     "compile_test_pack",
     "load_plan",
+    "project_test_pack_for_tenant",
     "StaticEvaluationResult",
     "StaticEvaluationStatus",
     "evaluate_static_fixture",
