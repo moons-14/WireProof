@@ -3,6 +3,8 @@ import json
 from typing import cast
 
 import pytest
+import wireproof_runtime
+import wireproof_runtime.observers as observers
 from wireproof_runtime.observers import (
     CaptureRef,
     ObservationReason,
@@ -11,6 +13,27 @@ from wireproof_runtime.observers import (
     parse_gobgp_fixture,
     parse_vxlan_udp_payload,
 )
+
+
+def test_observer_api_is_available_from_package_root() -> None:
+    expected = {
+        "CaptureRef",
+        "EvpnRoute",
+        "EvpnRouteExpectation",
+        "GoBgpParseResult",
+        "GoBgpSnapshot",
+        "ObservationOutcome",
+        "ObservationReason",
+        "ObservationResult",
+        "VxlanHeader",
+        "VxlanParseResult",
+        "compare_gobgp_snapshots",
+        "parse_gobgp_fixture",
+        "parse_vxlan_udp_payload",
+    }
+    assert {name for name in expected if hasattr(wireproof_runtime, name)} == expected
+    for name in expected:
+        assert getattr(wireproof_runtime, name) is getattr(observers, name)
 
 
 def _payload(source: str = "gobgp-a") -> str:
