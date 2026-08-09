@@ -2,8 +2,8 @@ clauses:
   - id: EVPN_M1
     statement: "Two-tenant symmetric-IRB reference fabric"
 nodes:
-  - {name: spine1, roles: [spine], interfaces: [{name: eth1}, {name: eth2}]}
-  - {name: spine2, roles: [spine], interfaces: [{name: eth1}, {name: eth2}]}
+  - {name: spine1, roles: [spine], interfaces: [{name: eth1}, {name: eth2}, {name: eth3}, {name: eth4}]}
+  - {name: spine2, roles: [spine], interfaces: [{name: eth1}, {name: eth2}, {name: eth3}, {name: eth4}]}
   - {name: leaf1, roles: [leaf], interfaces: [{name: lo0, addresses: [10.255.0.1/32]}, {name: eth1}, {name: eth2}]}
   - {name: leaf2, roles: [leaf], interfaces: [{name: lo0, addresses: [10.255.0.2/32]}, {name: eth1}, {name: eth2}]}
   - {name: leaf3, roles: [leaf], interfaces: [{name: lo0, addresses: [10.255.0.3/32]}, {name: eth1}, {name: eth2}]}
@@ -11,8 +11,12 @@ nodes:
 links:
   - {a: {node: spine1, interface: eth1}, b: {node: leaf1, interface: eth1}}
   - {a: {node: spine1, interface: eth2}, b: {node: leaf2, interface: eth1}}
-  - {a: {node: spine2, interface: eth1}, b: {node: leaf3, interface: eth1}}
-  - {a: {node: spine2, interface: eth2}, b: {node: leaf4, interface: eth1}}
+  - {a: {node: spine1, interface: eth3}, b: {node: leaf3, interface: eth1}}
+  - {a: {node: spine1, interface: eth4}, b: {node: leaf4, interface: eth1}}
+  - {a: {node: spine2, interface: eth1}, b: {node: leaf1, interface: eth2}}
+  - {a: {node: spine2, interface: eth2}, b: {node: leaf2, interface: eth2}}
+  - {a: {node: spine2, interface: eth3}, b: {node: leaf3, interface: eth2}}
+  - {a: {node: spine2, interface: eth4}, b: {node: leaf4, interface: eth2}}
 vlans: [{id: 101, name: tenant-a}, {id: 201, name: tenant-b}]
 vrfs: [{name: tenant-a, tenant: a}, {name: tenant-b, tenant: b}, {name: management, tenant: ops, management: true}]
 prefix_sets: [{name: default-only, prefixes: [0.0.0.0/0]}]

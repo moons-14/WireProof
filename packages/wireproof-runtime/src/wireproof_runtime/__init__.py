@@ -28,6 +28,20 @@ class RuntimeOperation(StrEnum):
 
 
 @dataclass(frozen=True)
+class ResourceOwnership:
+    """The complete identity required before a recorded cleanup may select a resource."""
+
+    kind: str
+    identity: str
+    managed_by: str
+    run_id: str
+
+    def __post_init__(self) -> None:
+        if not self.kind or not self.identity or not self.run_id or self.managed_by != "wireproof":
+            raise ValueError("ownership requires kind, identity, wireproof label, and run ID")
+
+
+@dataclass(frozen=True)
 class RuntimeCommand:
     operation: RuntimeOperation
     argv: tuple[str, ...]
@@ -60,6 +74,53 @@ class RuntimeCommand:
         return cls._make(RuntimeOperation.DESTROY, run_id)
 
 
+@dataclass(frozen=True)
+class RecordedDryPlan:
+    """A fake-only recording: it is intentionally not a Containerlab invocation."""
+
+    ownership: ResourceOwnership
+    commands: tuple[RuntimeCommand, ...]
+    execution_mode: ExecutionMode = ExecutionMode.FAKE
+
+    @property
+    def promotion_allowed(self) -> bool:
+        return False
+
+
+@dataclass(frozen=True)
+class ResidueInspection:
+    result: Result
+    residues: tuple[ResourceOwnership, ...] = ()
+
+    @property
+    def cleanup_succeeded(self) -> bool:
+        return self.result is Result.PASS and not self.residues
+
+
+class RecordedContainerlabAdapter:
+    """Closed dry-plan adapter; it records intent and never calls Containerlab or a shell."""
+
+    def dry_plan(
+        self, operation: RuntimeOperation, ownership: ResourceOwnership
+    ) -> RecordedDryPlan:
+        command = RuntimeCommand._make(operation, ownership.run_id)
+        return RecordedDryPlan(ownership=ownership, commands=(command,))
+
+    def inspect_residue(
+        self,
+        resources: tuple[ResourceOwnership, ...] | None,
+        ownership: ResourceOwnership,
+    ) -> ResidueInspection:
+        if resources is None:
+            return ResidueInspection(Result.UNKNOWN)
+        residues = tuple(
+            resource
+            for resource in resources
+            if resource.managed_by == "wireproof" and resource.run_id == ownership.run_id
+        )
+        return ResidueInspection(Result.PASS, residues)
+
+
 class CommandRunner:
     def run(self, command: RuntimeCommand) -> bool:
         raise NotImplementedError
@@ -76,7 +137,14 @@ class FakeRunner(CommandRunner):
         if command.operation in self.fail_operations:
             return False
         if command.operation is RuntimeOperation.DEPLOY:
-            self.resources.append({"managed_by": "wireproof", "run_id": command.argv[-1]})
+            self.resources.append(
+                {
+                    "kind": "containerlab-lab",
+                    "identity": command.argv[-1],
+                    "managed_by": "wireproof",
+                    "run_id": command.argv[-1],
+                }
+            )
         elif command.operation is RuntimeOperation.DESTROY:
             run_id = command.argv[-1]
             self.resources[:] = [
