@@ -11,6 +11,12 @@ from math import isfinite
 from wireproof_compiler import RuntimeMetadata
 from wireproof_evidence import EvidenceRecord, ExecutionMode, ReasonCode, Result
 
+from wireproof_runtime.clab_ebgp import ClabEbgpState as ClabEbgpState
+from wireproof_runtime.clab_ebgp import ClabPreparationError as ClabPreparationError
+from wireproof_runtime.clab_ebgp import ContainerlabEbgpRun as ContainerlabEbgpRun
+from wireproof_runtime.clab_ebgp import (
+    SubprocessContainerlabExecutor as _SubprocessContainerlabExecutor,
+)
 from wireproof_runtime.frr_smoke import DockerExecutor as DockerExecutor
 from wireproof_runtime.frr_smoke import DockerResult as DockerResult
 from wireproof_runtime.frr_smoke import FrrSmokeRun as FrrSmokeRun
@@ -18,6 +24,11 @@ from wireproof_runtime.frr_smoke import FrrSmokeState as FrrSmokeState
 from wireproof_runtime.frr_smoke import SubprocessDockerExecutor as SubprocessDockerExecutor
 
 _IMAGE = re.compile(r"^[^@:\s]+(?:/[^@:\s]+)*:[^@\s]+@sha256:[0-9a-f]{64}$")
+
+
+def new_containerlab_ebgp_run() -> ContainerlabEbgpRun:
+    """Create the closed real-executor scenario used by the CLI."""
+    return ContainerlabEbgpRun(_SubprocessContainerlabExecutor())
 
 
 class ImageRef(str):

@@ -2,13 +2,21 @@ from __future__ import annotations
 
 import json
 import re
+import subprocess
 from pathlib import Path
 from typing import Annotated
 
 import typer
 from wireproof_compiler import compile_plan, load_plan
 from wireproof_evidence import Result
-from wireproof_runtime import FrrSmokeRun, FrrSmokeState, SubprocessDockerExecutor, lab_doctor
+from wireproof_runtime import (
+    ClabPreparationError,
+    FrrSmokeRun,
+    FrrSmokeState,
+    SubprocessDockerExecutor,
+    lab_doctor,
+    new_containerlab_ebgp_run,
+)
 
 app = typer.Typer(no_args_is_help=True)
 lab = typer.Typer(no_args_is_help=True)
@@ -93,21 +101,74 @@ def _smoke_result(change_id: str) -> tuple[dict[str, object], bool]:
 
 @lab.command("frr-smoke")
 def frr_smoke(
-    change_id: str,
+    scenario: str,
     repeat: Annotated[int, typer.Option(min=1, max=2)] = 1,
 ) -> None:
-    """Run the fixed, isolated FRR process smoke lifecycle."""
-    if not _CHANGE_ID.fullmatch(change_id):
-        raise typer.BadParameter("must be a non-empty identifier without credentials")
+    """Run a closed FRR smoke scenario."""
+    if scenario == "clab-ebgp-v4":
+        _clab_ebgp_smoke(repeat)
+        return
+    if not _CHANGE_ID.fullmatch(scenario):
+        raise typer.BadParameter("must select clab-ebgp-v4")
 
     results: list[dict[str, object]] = []
     succeeded = True
     for _ in range(repeat):
-        payload, run_succeeded = _smoke_result(change_id)
+        payload, run_succeeded = _smoke_result(scenario)
         results.append(payload)
         if not run_succeeded:
             succeeded = False
             break
     typer.echo(json.dumps(results, sort_keys=True, separators=(",", ":")))
     if not succeeded or len(results) != repeat:
+        raise typer.Exit(1)
+
+
+def _clab_ebgp_smoke(repeat: int) -> None:
+    """Emit only the contractually fixed Containerlab eBGP smoke record."""
+    records: list[dict[str, object]] = []
+    all_clean = True
+    for _ in range(repeat):
+        run = new_containerlab_ebgp_run()
+        up = status = down = False
+        try:
+            up = run.up()
+            if up:
+                status = run.status()
+        except (ClabPreparationError, OSError, subprocess.TimeoutExpired):
+            pass
+        finally:
+            # Any deploy attempt receives the exact closed destroy attempt.
+            if run.deploy_attempted:
+                down = run.down()
+        record: dict[str, object] = {
+            "run_id": run.run_id,
+            "lab_name": run.lab_name,
+            "state": run.state.value,
+            "up": "PASS" if up else "FAIL",
+            "status": "PASS" if status else "FAIL",
+            "down": "PASS" if down else "FAIL",
+            "execution_mode": "REAL",
+            "scope": "containerlab-frr-ebgp-v4-only",
+            "conformance": "UNKNOWN",
+            "resolved_repo_digest": run.resolved_repo_digest,
+        }
+        failure = getattr(run, "failure", None)
+        if failure is not None:
+            record["failure"] = {
+                "code": failure.code.value,
+                "stage": failure.stage,
+                "resource_mutation": failure.resource_mutation,
+            }
+        if run.state.value == "CLEANUP_FAILED":
+            record["recovery_topology_path"] = str(run.artifact)
+            recovery = run.recovery_destroy_command
+            record["recovery_destroy_command"] = list(recovery) if recovery is not None else None
+        records.append(record)
+        clean = up and status and down and run.state.value == "CLEANED"
+        all_clean = all_clean and clean
+        if not clean:
+            break
+    typer.echo(json.dumps(records, separators=(",", ":")))
+    if not all_clean or len(records) != repeat:
         raise typer.Exit(1)

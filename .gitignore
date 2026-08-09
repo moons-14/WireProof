@@ -9,4 +9,5 @@ __pycache__/
 coverage.xml
 htmlcov/
 evidence/
+.wireproof/
 *.pcap

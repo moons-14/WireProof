@@ -16,3 +16,17 @@ commit `4cb6d9e`, and the pinned six-platform OCI index
 Recorded dry plans have only typed DEPLOY/INSPECT/DESTROY commands and require
 both `managed_by=wireproof` and `run_id` labels for cleanup selection. An
 unavailable residue reinspection is `UNKNOWN`, never cleanup success.
+
+**Execution boundary:** cooperative in-process code may compose the lifecycle
+with an executor and is not a sandbox. The CLI uses only the runtime scenario
+factory, which fixes the real executor and preserves the closed command surface.
+
+**Artifact cleanup boundary:** each generated run directory is private (`0700`) and
+is removed only after a complete immutable inode manifest confirms exactly the
+minted `n1`/`n2` directories, their `frr.conf` files, and topology file. Cleanup
+uses descriptor-relative, no-follow operations and deletes only those listed
+entries; an unexpected, replaced, linked, or special entry leaves the directory
+for recovery and reports cleanup failure. This mitigates stale-path and
+pre-existing replacement attacks. It does not claim safety against a concurrent
+same-UID adversary that changes the tree after validation: that active race is
+outside this cooperative-process threat boundary.
