@@ -7,7 +7,9 @@ It is not an EVPN emulator and none of its output discharges an unexecuted
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from copy import deepcopy
+from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
 from typing import Any, TypedDict
@@ -16,7 +18,7 @@ import yaml
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 from wireproof_core import FeatureContract
 
-from .compile import TestPack, compile_test_pack
+from .compile import TestPack, TestPackClause, semantic_ir_hash
 
 
 class StaticEvaluationStatus(StrEnum):
@@ -65,6 +67,143 @@ _RULES = {
     "asymmetric_vtep": "ASYMMETRIC_VTEP",
 }
 
+# These are closed fixture declarations, rather than comparisons with unstable
+# Pydantic diagnostic text.  A fixture is useful only when it names the
+# compiler obligation whose expected semantic object it intentionally breaks.
+_FIXTURE_BINDINGS = {
+    "wrong_rt": ("import/export RTs must intersect", "evpn", "tenant-a-l2", "name", "tenant-a-l2"),
+    "wrong_vni": ("duplicate VNI", "vni", "l3:11001", "vni", 11001),
+    "cross_tenant_rt": (
+        "cross-tenant RT sharing requires a shared-service EVPN instance",
+        "evpn",
+        "tenant-b-l2",
+        "name",
+        "tenant-b-l2",
+    ),
+    "default_route_leak": (
+        "management export policy permits default route",
+        "bgp",
+        "leaf1:65001->spine1:65000;af=ipv4-unicast",
+        "local_node",
+        "leaf1",
+    ),
+    "missing_evpn_af": (
+        "EVPN participant requires l2vpn-evpn BGP session",
+        "bgp",
+        "leaf1:65001->spine1:65000;af=l2vpn-evpn",
+        "local_node",
+        "leaf1",
+    ),
+    "stale_fdb": ("stale FDB entry", "vni", "l2:10101", "vni", 10101),
+    "asymmetric_vtep": ("asymmetric VTEP", "vni", "l2:10101", "vni", 10101),
+}
+
+_BINDING_GUARD = object()
+
+
+@dataclass(frozen=True, slots=True, init=False)
+class StaticEvaluationBinding:
+    """Read-only association with artifacts from one completed compilation.
+
+    The factory is the local trust boundary.  This prevents accidental public
+    construction and mutation; it is not a security boundary against code that
+    deliberately bypasses Python object protections.
+    """
+
+    _baseline_semantic_ir_hash: str
+    _test_pack: TestPack
+    _test_pack_canonical_hash: str
+    _guard: object
+
+    def __init__(
+        self,
+        baseline_semantic_ir_hash: str,
+        test_pack: TestPack,
+        test_pack_canonical_hash: str,
+        guard: object,
+    ) -> None:
+        if guard is not _BINDING_GUARD:
+            raise TypeError("StaticEvaluationBinding instances are factory-owned")
+        object.__setattr__(self, "_baseline_semantic_ir_hash", baseline_semantic_ir_hash)
+        object.__setattr__(self, "_test_pack", test_pack)
+        object.__setattr__(self, "_test_pack_canonical_hash", test_pack_canonical_hash)
+        object.__setattr__(self, "_guard", guard)
+
+
+def bind_static_evaluation(compiled: Mapping[str, Any]) -> StaticEvaluationBinding:
+    """Bind static evaluation to the exact compiler result without recompiling."""
+    semantic_ir_hash = compiled.get("semantic_ir_hash")
+    test_pack = compiled.get("test_pack")
+    if not isinstance(semantic_ir_hash, str) or not isinstance(test_pack, TestPack):
+        raise TypeError("compiled result has no static evaluation artifacts")
+    if test_pack.semantic_ir_hash != semantic_ir_hash:
+        raise ValueError("compiled TestPack semantic hash mismatch")
+    return StaticEvaluationBinding(
+        semantic_ir_hash, test_pack, test_pack.canonical_hash, _BINDING_GUARD
+    )
+
+
+def _bound_pack(binding: object) -> TestPack | None:
+    if not isinstance(binding, StaticEvaluationBinding) or binding._guard is not _BINDING_GUARD:
+        return None
+    if (
+        binding._test_pack.semantic_ir_hash != binding._baseline_semantic_ir_hash
+        or binding._test_pack.canonical_hash != binding._test_pack_canonical_hash
+    ):
+        return None
+    return binding._test_pack
+
+
+def _common(binding: object, source_identity: str) -> _CommonResultFields:
+    pack = _bound_pack(binding)
+    return {
+        "fixture_source_identity": source_identity,
+        "baseline_semantic_ir_hash": pack.semantic_ir_hash if pack else "",
+        "test_pack_canonical_hash": pack.canonical_hash if pack else "",
+        "test_pack_states": tuple(clause.state for clause in pack.clauses) if pack else (),
+    }
+
+
+def _binding_error(binding: object, source_identity: str) -> StaticEvaluationResult | None:
+    if _bound_pack(binding) is None:
+        return StaticEvaluationResult(
+            status=StaticEvaluationStatus.UNKNOWN,
+            rule_id="STATIC_BINDING_INVALID",
+            detail="static evaluator requires a trusted compiled binding",
+            **_common(binding, source_identity),
+        )
+    return None
+
+
+def _baseline_binding_error(
+    baseline: FeatureContract, binding: object, source_identity: str
+) -> StaticEvaluationResult | None:
+    invalid = _binding_error(binding, source_identity)
+    if invalid:
+        return invalid
+    assert isinstance(binding, StaticEvaluationBinding)
+    if semantic_ir_hash(baseline) != binding._baseline_semantic_ir_hash:
+        return StaticEvaluationResult(
+            status=StaticEvaluationStatus.UNKNOWN,
+            rule_id="STATIC_BINDING_BASELINE_MISMATCH",
+            detail="baseline semantic fingerprint differs from the bound compilation",
+            **_common(binding, source_identity),
+        )
+    return None
+
+
+def _matches_clause(
+    clause: TestPackClause, kind: str, identity: str, field: str, value: object
+) -> bool:
+    expected = clause.expected_condition.get("expected")
+    return (
+        clause.requirement_kind == kind
+        and clause.source_identity == identity
+        and clause.expected_condition.get("object_kind") == kind
+        and isinstance(expected, dict)
+        and expected.get(field) == value
+    )
+
 
 def _mutated_document(plan: FeatureContract, mutation: str) -> dict[str, Any]:
     document: dict[str, Any] = deepcopy(plan.model_dump(mode="json"))
@@ -90,36 +229,46 @@ def _mutated_document(plan: FeatureContract, mutation: str) -> dict[str, Any]:
 
 
 def evaluate_static_fixture(
-    baseline: FeatureContract, test_pack: TestPack, fixture_path: Path
+    baseline: FeatureContract, binding: StaticEvaluationBinding, fixture_path: Path
 ) -> StaticEvaluationResult:
     """Evaluate one declared negative mutation with the semantic validator only."""
-    compiled_pack = compile_test_pack(baseline)
-    source = str(fixture_path)
-    states = tuple(clause.state for clause in test_pack.clauses)
-    common: _CommonResultFields = {
-        "fixture_source_identity": source,
-        "baseline_semantic_ir_hash": compiled_pack.semantic_ir_hash,
-        "test_pack_canonical_hash": test_pack.canonical_hash,
-        "test_pack_states": states,
-    }
-    if test_pack.semantic_ir_hash != compiled_pack.semantic_ir_hash:
-        return StaticEvaluationResult(
-            status=StaticEvaluationStatus.UNKNOWN,
-            rule_id="TEST_PACK_SEMANTIC_HASH_MISMATCH",
-            detail="supplied TestPack is not bound to the baseline semantic IR",
-            **common,
-        )
-    if test_pack.canonical_hash != compiled_pack.canonical_hash:
-        return StaticEvaluationResult(
-            status=StaticEvaluationStatus.UNKNOWN,
-            rule_id="TEST_PACK_CANONICAL_HASH_MISMATCH",
-            detail="supplied TestPack does not match the canonical baseline compilation",
-            **common,
-        )
+    invalid = _baseline_binding_error(baseline, binding, str(fixture_path))
+    if invalid:
+        return invalid
     try:
-        metadata = FixtureMetadata.model_validate(
-            yaml.safe_load(fixture_path.read_text(encoding="utf-8"))
-        )
+        fixture_bytes = fixture_path.read_bytes()
+    except OSError as exc:
+        return _fixture_error_result(binding, str(fixture_path), type(exc).__name__)
+    return evaluate_static_fixture_bytes(baseline, binding, fixture_bytes, str(fixture_path))
+
+
+def _fixture_error_result(
+    binding: object, source_identity: str, error: str
+) -> StaticEvaluationResult:
+    invalid = _binding_error(binding, source_identity)
+    if invalid:
+        return invalid
+    return StaticEvaluationResult(
+        status=StaticEvaluationStatus.UNKNOWN,
+        rule_id="STATIC_FIXTURE_METADATA_INVALID",
+        detail=f"fixture metadata rejected: {error}",
+        **_common(binding, source_identity),
+    )
+
+
+def evaluate_static_fixture_bytes(
+    baseline: FeatureContract,
+    binding: StaticEvaluationBinding,
+    fixture_bytes: bytes,
+    source_identity: str,
+) -> StaticEvaluationResult:
+    """Evaluate fixture bytes already read and content-identified by the caller."""
+    invalid = _baseline_binding_error(baseline, binding, source_identity)
+    if invalid:
+        return invalid
+    common = _common(binding, source_identity)
+    try:
+        metadata = FixtureMetadata.model_validate(yaml.safe_load(fixture_bytes.decode("utf-8")))
     except (OSError, UnicodeError, ValidationError, yaml.YAMLError) as exc:
         return StaticEvaluationResult(
             status=StaticEvaluationStatus.UNKNOWN,
@@ -128,11 +277,34 @@ def evaluate_static_fixture(
             **common,
         )
     rule_id = _RULES.get(metadata.mutation)
-    if rule_id is None:
+    fixture_binding = _FIXTURE_BINDINGS.get(metadata.mutation)
+    if rule_id is None or fixture_binding is None:
         return StaticEvaluationResult(
             status=StaticEvaluationStatus.UNKNOWN,
             rule_id="STATIC_FIXTURE_MUTATION_UNMAPPED",
             detail="fixture mutation has no closed static evaluator mapping",
+            **common,
+        )
+    expected_error, kind, identity, field, value = fixture_binding
+    if metadata.expected_error != expected_error:
+        return StaticEvaluationResult(
+            status=StaticEvaluationStatus.UNKNOWN,
+            rule_id="STATIC_FIXTURE_EXPECTATION_MISMATCH",
+            detail="fixture expected_error does not match the closed mutation expectation",
+            **common,
+        )
+    pack = _bound_pack(binding)
+    assert pack is not None
+    selected = [
+        clause for clause in pack.clauses if _matches_clause(clause, kind, identity, field, value)
+    ]
+    if len(selected) != 1:
+        return StaticEvaluationResult(
+            status=StaticEvaluationStatus.UNKNOWN,
+            rule_id="STATIC_FIXTURE_CLAUSE_UNBOUND",
+            detail=(
+                "fixture mutation has no unique declared TestPack clause with matching semantics"
+            ),
             **common,
         )
     try:
@@ -160,30 +332,13 @@ def evaluate_static_fixture(
 
 
 def evaluate_static_baseline(
-    baseline: FeatureContract, test_pack: TestPack, source_identity: str = "baseline"
+    baseline: FeatureContract, binding: StaticEvaluationBinding, source_identity: str = "baseline"
 ) -> StaticEvaluationResult:
     """Record that the bound baseline itself is valid, without executing its pack."""
-    compiled_pack = compile_test_pack(baseline)
-    common: _CommonResultFields = {
-        "fixture_source_identity": source_identity,
-        "baseline_semantic_ir_hash": compiled_pack.semantic_ir_hash,
-        "test_pack_canonical_hash": test_pack.canonical_hash,
-        "test_pack_states": tuple(clause.state for clause in test_pack.clauses),
-    }
-    if test_pack.semantic_ir_hash != compiled_pack.semantic_ir_hash:
-        return StaticEvaluationResult(
-            status=StaticEvaluationStatus.UNKNOWN,
-            rule_id="TEST_PACK_SEMANTIC_HASH_MISMATCH",
-            detail="supplied TestPack is not bound to the baseline semantic IR",
-            **common,
-        )
-    if test_pack.canonical_hash != compiled_pack.canonical_hash:
-        return StaticEvaluationResult(
-            status=StaticEvaluationStatus.UNKNOWN,
-            rule_id="TEST_PACK_CANONICAL_HASH_MISMATCH",
-            detail="supplied TestPack does not match the canonical baseline compilation",
-            **common,
-        )
+    invalid = _baseline_binding_error(baseline, binding, source_identity)
+    if invalid:
+        return invalid
+    common = _common(binding, source_identity)
     return StaticEvaluationResult(
         status=StaticEvaluationStatus.PASS,
         rule_id="BASELINE_SEMANTIC_VALID",

@@ -7,9 +7,16 @@ have an independent canonical hash which the envelope binds, so observed results
 the required evidence contract.  A bundle is not an approval, promotion, or trusted-authority
 token; consumers must make any operational decision outside this format.
 
-Persistence accepts only an existing absolute non-symlink root.  Each component is opened with
-directory-FD-relative `O_DIRECTORY`/`O_NOFOLLOW`, so validation and use share the same verified
-directory descriptors.  The store derives its filename solely from the canonical hash; it never
+The CLI lexically makes its evidence root absolute and, immediately before persistence, creates
+at most a missing final root directory with mode `0700`.  It never creates parents.  Existing
+ancestors are opened directory-FD-relative with `O_DIRECTORY`/`O_NOFOLLOW`, must be owned by the
+effective user or root, and must not be group/other writable unless they are sticky trusted
+directories (such as `/tmp`).  The final root must be owned by the effective user and have no
+group/other permissions.  Persistence independently repeats this descriptor-based validation,
+so validation and use share verified directory descriptors.  This protects against path
+replacement by other users; a same-UID active attacker remains outside the threat boundary and
+is mitigated by revalidation immediately before persistence.  The store derives its filename
+solely from the canonical hash; it never
 accepts a caller-provided relative path.  It creates an `O_EXCL`/`O_NOFOLLOW` temporary file in
 that directory, fsyncs it, creates the final name with a no-replace hard link, fsyncs the
 directory, and removes only its own temporary file.  Existing files, collisions, traversal, and

@@ -498,8 +498,26 @@ def _require_safe_persistence_primitives() -> None:
         raise UnsupportedPlatformError("safe evidence persistence is unsupported on this platform")
 
 
-def _open_safe_root(root: Path) -> int:
-    """Open each root component relative to its already verified parent descriptor."""
+def _is_safe_ancestor(stat: os.stat_result) -> bool:
+    """Return whether an opened ancestor is trusted for fd-relative descent."""
+    owner_is_trusted = stat.st_uid in {os.geteuid(), 0}
+    writable_by_untrusted = stat.st_mode & 0o022
+    sticky_trusted = bool(stat.st_mode & 0o1000) and owner_is_trusted
+    return owner_is_trusted and (not writable_by_untrusted or sticky_trusted)
+
+
+def _is_safe_final_root(stat: os.stat_result) -> bool:
+    return stat.st_uid == os.geteuid() and not (stat.st_mode & 0o077)
+
+
+def _validate_ancestor(descriptor: int) -> None:
+    stat = os.fstat(descriptor)
+    if not _is_safe_ancestor(stat):
+        raise ValueError("evidence root has an unsafe ancestor")
+
+
+def _open_evidence_root(root: Path, *, create_final: bool) -> int:
+    """Walk trusted ancestors without following links and validate the final directory."""
     if not root.is_absolute():
         raise ValueError("evidence root must be an absolute path")
     if ".." in root.parts:
@@ -508,14 +526,56 @@ def _open_safe_root(root: Path) -> int:
     flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
     descriptor = os.open(root.anchor, flags)
     try:
-        for component in root.parts[1:]:
+        _validate_ancestor(descriptor)
+        components = root.parts[1:]
+        for component in components[:-1]:
             child = os.open(component, flags, dir_fd=descriptor)
+            try:
+                _validate_ancestor(child)
+            except BaseException:
+                os.close(child)
+                raise
             os.close(descriptor)
             descriptor = child
+        if not components:
+            if not _is_safe_final_root(os.fstat(descriptor)):
+                raise ValueError("evidence root has unsafe ownership or permissions")
+            return descriptor
+        final_name = components[-1]
+        try:
+            child = os.open(final_name, flags, dir_fd=descriptor)
+        except FileNotFoundError:
+            if not create_final:
+                raise ValueError(
+                    "evidence root must be an existing non-symlink directory"
+                ) from None
+            try:
+                os.mkdir(final_name, 0o700, dir_fd=descriptor)
+            except FileExistsError:
+                # A concurrent creator won.  Reopen by descriptor and apply the
+                # same final-root policy; never trust the path it supplied.
+                pass
+            child = os.open(final_name, flags, dir_fd=descriptor)
+        try:
+            if not _is_safe_final_root(os.fstat(child)):
+                raise ValueError("evidence root has unsafe ownership or permissions")
+        except BaseException:
+            os.close(child)
+            raise
+        os.close(descriptor)
+        return child
     except OSError as error:
         os.close(descriptor)
         raise ValueError("evidence root must be an existing non-symlink directory") from error
-    return descriptor
+    except Exception:
+        os.close(descriptor)
+        raise
+
+
+def ensure_safe_evidence_root(root: Path) -> None:
+    """Create and validate one private evidence root below trusted existing ancestors."""
+    directory = _open_evidence_root(root, create_final=True)
+    os.close(directory)
 
 
 def persist_bundle(root: Path, bundle: EvidenceBundle) -> Path:
@@ -525,7 +585,7 @@ def persist_bundle(root: Path, bundle: EvidenceBundle) -> Path:
     temp_name = f".{name}.{uuid.uuid4().hex}.tmp"
     _require_safe_persistence_primitives()
     flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW
-    directory = _open_safe_root(root)
+    directory = _open_evidence_root(root, create_final=False)
     descriptor = -1
     try:
         descriptor = os.open(temp_name, flags, 0o600, dir_fd=directory)

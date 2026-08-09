@@ -86,6 +86,7 @@ from wireproof_evidence.bundle import (  # noqa: E402
     StructuralFindingCode,
     UnsupportedPlatformError,
     canonical_json_bytes,
+    ensure_safe_evidence_root,
     persist_bundle,
 )
 
@@ -114,6 +115,7 @@ __all__ = [
     "StructuralFinding",
     "StructuralFindingCode",
     "UnsupportedPlatformError",
+    "ensure_safe_evidence_root",
     "canonical_json_bytes",
     "persist_bundle",
 ]

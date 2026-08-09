@@ -13,12 +13,16 @@ from .compile import (
     compile_test_pack,
     load_plan,
     project_test_pack_for_tenant,
+    semantic_ir_hash,
 )
 from .static_evaluator import (
+    StaticEvaluationBinding,
     StaticEvaluationResult,
     StaticEvaluationStatus,
+    bind_static_evaluation,
     evaluate_static_baseline,
     evaluate_static_fixture,
+    evaluate_static_fixture_bytes,
 )
 
 __all__ = [
@@ -36,8 +40,12 @@ __all__ = [
     "compile_test_pack",
     "load_plan",
     "project_test_pack_for_tenant",
+    "semantic_ir_hash",
     "StaticEvaluationResult",
+    "StaticEvaluationBinding",
     "StaticEvaluationStatus",
+    "bind_static_evaluation",
     "evaluate_static_fixture",
+    "evaluate_static_fixture_bytes",
     "evaluate_static_baseline",
 ]

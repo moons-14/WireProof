@@ -18,9 +18,13 @@ from wireproof_runtime import (
     new_containerlab_ebgp_run,
 )
 
+from .static_verify import static_verify
+
 app = typer.Typer(no_args_is_help=True)
 lab = typer.Typer(no_args_is_help=True)
+verify = typer.Typer(no_args_is_help=True)
 app.add_typer(lab, name="lab")
+app.add_typer(verify, name="verify")
 
 
 @app.command()
@@ -37,6 +41,19 @@ def compile(plan: Path) -> None:
             sort_keys=True,
         )
     )
+
+
+@verify.command("static")
+def verify_static(
+    plan: Path,
+    fixture: Annotated[Path | None, typer.Option()] = None,
+    evidence_root: Annotated[Path, typer.Option()] = Path("evidence"),
+) -> None:
+    """Persist static-only evidence; it never executes runtime conformance."""
+    envelope, exit_code = static_verify(plan, fixture, evidence_root)
+    typer.echo(json.dumps(envelope, sort_keys=True, separators=(",", ":")))
+    if exit_code:
+        raise typer.Exit(exit_code)
 
 
 @lab.command("compile")

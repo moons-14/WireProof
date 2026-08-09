@@ -37,6 +37,19 @@ or unsupported mutations are `UNKNOWN`. It records source identity, rule,
 validator provenance, semantic/TestPack hashes, and leaves every TestPack clause
 `UNEXECUTED`. It makes no RT-3/RT-5, control-plane, forwarding, learning, or
 packet-conformance claim; `stale_fdb` means an invalid static FDB reference.
+The binding is a reusable, read-only association made by one completed compiler
+invocation. Each evaluation recomputes only the baseline's canonical semantic
+fingerprint (never a TestPack or plan compilation) and returns
+`STATIC_BINDING_BASELINE_MISMATCH` as `UNKNOWN` before evaluating a clause when
+the supplied baseline differs. This local accidental-misuse boundary is not a
+claim of protection against deliberately privileged Python code.
+
+`wireproof verify static PLAN --evidence-root DIR [--fixture FIXTURE]` is the
+closed CLI wrapper for that adapter. It reads each supplied input once, binds
+only SHA-256 content identities (never paths or argv) into an immutable bundle,
+and always records `runtime-e2e` as `UNKNOWN` with
+`unexecuted_by_static_command`. Thus its envelope is never promotion eligible;
+the command is a static regression check, not a runtime conformance result.
 
 ## Promotion gates
 

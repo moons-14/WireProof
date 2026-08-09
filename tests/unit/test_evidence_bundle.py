@@ -1,9 +1,14 @@
 from __future__ import annotations
 
 import hashlib
+import os
+import stat
+from collections.abc import Callable
 from pathlib import Path
+from typing import Any
 
 import pytest
+import wireproof_evidence.bundle as bundle_module
 from pydantic import ValidationError
 from wireproof_evidence import (
     CaptureRef,
@@ -25,8 +30,44 @@ from wireproof_evidence import (
     Result,
     StructuralFindingCode,
     UnsupportedPlatformError,
+    ensure_safe_evidence_root,
     persist_bundle,
 )
+
+UNSAFE_TEST_FILESYSTEM_REASON = (
+    "unsafe test filesystem ownership; descriptor policy covered by unit tests"
+)
+
+
+def _real_ancestors_are_safe(
+    path: Path,
+    *,
+    stat_fn: Callable[[Path], Any] = os.stat,
+    effective_uid: int | None = None,
+) -> bool:
+    """Check real ancestors only to decide whether persistence integration is available."""
+    candidate = path if path.is_absolute() else Path.cwd() / path
+    candidate = Path(os.path.abspath(candidate))
+    uid = os.geteuid() if effective_uid is None else effective_uid
+    while True:
+        try:
+            info = stat_fn(candidate)
+        except FileNotFoundError:
+            pass
+        else:
+            owner_is_trusted = info.st_uid in {uid, 0}
+            writable_by_untrusted = info.st_mode & 0o022
+            sticky_trusted = bool(info.st_mode & stat.S_ISVTX) and owner_is_trusted
+            if not owner_is_trusted or (writable_by_untrusted and not sticky_trusted):
+                return False
+        if candidate == Path(candidate.anchor):
+            return True
+        candidate = candidate.parent
+
+
+def _skip_if_unsafe_test_filesystem(path: Path) -> None:
+    if not _real_ancestors_are_safe(path):
+        pytest.skip(UNSAFE_TEST_FILESYSTEM_REASON)
 
 
 def requirements() -> EvidenceRequirements:
@@ -401,6 +442,7 @@ def test_clause_capture_ref_outside_linked_observation_union_is_rejected() -> No
 
 
 def test_persistence_is_atomic_create_only_and_rejects_unsafe_roots(tmp_path: Path) -> None:
+    _skip_if_unsafe_test_filesystem(tmp_path)
     evidence = bundle()
     saved = persist_bundle(tmp_path, evidence)
     assert saved.name == f"{evidence.canonical_hash}.json"
@@ -416,6 +458,80 @@ def test_persistence_is_atomic_create_only_and_rejects_unsafe_roots(tmp_path: Pa
     with pytest.raises(ValueError, match="symlink"):
         persist_bundle(link, evidence)
     assert not list(tmp_path.glob("*.tmp"))
+
+
+def test_ensure_safe_evidence_root_creates_only_a_private_final_directory(tmp_path: Path) -> None:
+    _skip_if_unsafe_test_filesystem(tmp_path)
+    root = tmp_path / "new-evidence"
+    ensure_safe_evidence_root(root)
+    assert root.is_dir()
+    assert root.stat().st_mode & 0o777 == 0o700
+    persist_bundle(root, bundle())
+    unsafe = tmp_path / "unsafe"
+    unsafe.mkdir(mode=0o777)
+    unsafe.chmod(0o777)
+    with pytest.raises(ValueError, match="unsafe ancestor"):
+        ensure_safe_evidence_root(unsafe / "child")
+    assert not (unsafe / "child").exists()
+
+
+def test_open_evidence_root_closes_child_when_ancestor_validation_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ancestor = tmp_path / "ancestor"
+    final = ancestor / "final"
+    final.mkdir(parents=True)
+    closed: list[int] = []
+    original_close = bundle_module.os.close
+
+    def tracked_close(descriptor: int) -> None:
+        closed.append(descriptor)
+        original_close(descriptor)
+
+    def failing_validate(descriptor: int) -> None:
+        if bundle_module.os.fstat(descriptor).st_ino == ancestor.stat().st_ino:
+            raise RuntimeError("injected validation failure")
+        return
+
+    monkeypatch.setattr(bundle_module.os, "close", tracked_close)
+    monkeypatch.setattr(bundle_module, "_validate_ancestor", failing_validate)
+    with pytest.raises(RuntimeError, match="injected"):
+        bundle_module._open_evidence_root(final, create_final=False)
+    assert closed
+
+
+def test_open_evidence_root_closes_child_when_final_validation_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    final = tmp_path / "final"
+    final.mkdir()
+    closed: list[int] = []
+    final_descriptor: list[int] = []
+    original_close = bundle_module.os.close
+    original_fstat = bundle_module.os.fstat
+
+    def tracked_close(descriptor: int) -> None:
+        closed.append(descriptor)
+        original_close(descriptor)
+
+    def tracked_fstat(descriptor: int):
+        stat = original_fstat(descriptor)
+        if stat.st_ino == final.stat().st_ino:
+            final_descriptor.append(descriptor)
+        return stat
+
+    monkeypatch.setattr(bundle_module.os, "close", tracked_close)
+    monkeypatch.setattr(bundle_module.os, "fstat", tracked_fstat)
+    monkeypatch.setattr(bundle_module, "_validate_ancestor", lambda _: None)
+    monkeypatch.setattr(
+        bundle_module,
+        "_is_safe_final_root",
+        lambda _: (_ for _ in ()).throw(RuntimeError("injected final failure")),
+    )
+    with pytest.raises(RuntimeError, match="injected final"):
+        bundle_module._open_evidence_root(final, create_final=False)
+    assert final_descriptor
+    assert final_descriptor[-1] in closed
 
 
 def test_persistence_fails_closed_without_no_follow(

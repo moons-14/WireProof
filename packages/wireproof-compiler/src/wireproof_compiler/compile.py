@@ -357,6 +357,13 @@ def _canonical_ir_hash(plan: FeatureContract) -> str:
     return hashlib.sha256(payload.encode()).hexdigest()
 
 
+def semantic_ir_hash(plan: FeatureContract) -> str:
+    """Return the canonical semantic fingerprint without compiling artifacts."""
+    if not isinstance(plan, FeatureContract):
+        raise TypeError("plan must be a FeatureContract")
+    return _canonical_ir_hash(plan)
+
+
 def _canonical_condition(value: Any) -> Any:
     """Turn a model payload into a deterministic JSON-compatible condition."""
     if isinstance(value, Mapping):
