@@ -30,6 +30,14 @@ Negative fixtures must fail their named assertion.  A renderer non-interference
 test proves an unrelated tenant change cannot alter another tenant's semantic or
 config output.
 
+The closed F4 fixture adapter performs only deterministic semantic validation.
+Its results are labelled `STATIC`: a healthy baseline is `PASS`, each mapped
+invalid mutation is `FAIL`, and malformed fixtures, TestPack binding failures,
+or unsupported mutations are `UNKNOWN`. It records source identity, rule,
+validator provenance, semantic/TestPack hashes, and leaves every TestPack clause
+`UNEXECUTED`. It makes no RT-3/RT-5, control-plane, forwarding, learning, or
+packet-conformance claim; `stale_fdb` means an invalid static FDB reference.
+
 ## Promotion gates
 
 1. **Semantic gate:** typed validation rejects duplicate VNI/RD, invalid RT,

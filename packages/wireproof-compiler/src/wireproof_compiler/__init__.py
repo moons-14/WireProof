@@ -13,6 +13,12 @@ from .compile import (
     compile_test_pack,
     load_plan,
 )
+from .static_evaluator import (
+    StaticEvaluationResult,
+    StaticEvaluationStatus,
+    evaluate_static_baseline,
+    evaluate_static_fixture,
+)
 
 __all__ = [
     "CONTAINERLAB_SCHEMA",
@@ -28,4 +34,8 @@ __all__ = [
     "compile_plan",
     "compile_test_pack",
     "load_plan",
+    "StaticEvaluationResult",
+    "StaticEvaluationStatus",
+    "evaluate_static_fixture",
+    "evaluate_static_baseline",
 ]

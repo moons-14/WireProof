@@ -18,6 +18,9 @@ Blocked by Epic C, Epic E, F1, F2, and F3; blocks Epic F.
 ## Deliverables
 Named negative fixtures/assertions.
 
+The initial evaluator is a closed, static semantic-validator adapter. It is not
+runtime conformance and does not cover RT-3/RT-5 or forwarding behaviour.
+
 ## Acceptance criteria
 NEG-01, TEST-01.
 
