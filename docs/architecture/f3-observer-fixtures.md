@@ -22,4 +22,14 @@ a best-path equality predicate.
 VXLAN parsing accepts only an eight-byte UDP payload header: I flag set, all
 reserved bytes zero, VNI 0..16777215, and final reserved byte zero. It records a
 SHA-256 digest of those raw eight bytes plus immutable `CaptureRef` provenance;
-it does not parse full packets or captures.
+it does not parse full captures.
+
+`parse_captured_vxlan_ethernet_frame` additionally accepts one supplied raw
+Ethernet-II frame as structural fixture evidence. It permits zero, one, or two
+outer `0x8100`/`0x88A8` VLAN tags; IPv4 with a non-fragmented UDP payload; or
+IPv6 with UDP directly in its base header. Its UDP destination must be 4789 and
+its VXLAN header follows the same eight-byte rule above. On success it records
+outer MACs, VLAN wire values, IP endpoints, UDP ports/checksum field, VNI, and
+the raw inner Ethernet frame with SHA-256 identities. It does not validate any
+checksum, parse pcaps, reassemble fragments, support IPv6 extensions, invoke a
+runtime, or claim forwarding/conformance. `PASS` means only structural parsing.

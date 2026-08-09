@@ -22,6 +22,10 @@ from wireproof_runtime.frr_smoke import DockerResult as DockerResult
 from wireproof_runtime.frr_smoke import FrrSmokeRun as FrrSmokeRun
 from wireproof_runtime.frr_smoke import FrrSmokeState as FrrSmokeState
 from wireproof_runtime.frr_smoke import SubprocessDockerExecutor as SubprocessDockerExecutor
+from wireproof_runtime.observers import CapturedVxlanEthernetFrame as CapturedVxlanEthernetFrame
+from wireproof_runtime.observers import (
+    CapturedVxlanEthernetFrameParseResult as CapturedVxlanEthernetFrameParseResult,
+)
 from wireproof_runtime.observers import CaptureRef as CaptureRef
 from wireproof_runtime.observers import EvpnRoute as EvpnRoute
 from wireproof_runtime.observers import EvpnRouteExpectation as EvpnRouteExpectation
@@ -30,9 +34,13 @@ from wireproof_runtime.observers import GoBgpSnapshot as GoBgpSnapshot
 from wireproof_runtime.observers import ObservationOutcome as ObservationOutcome
 from wireproof_runtime.observers import ObservationReason as ObservationReason
 from wireproof_runtime.observers import ObservationResult as ObservationResult
+from wireproof_runtime.observers import VlanTag as VlanTag
 from wireproof_runtime.observers import VxlanHeader as VxlanHeader
 from wireproof_runtime.observers import VxlanParseResult as VxlanParseResult
 from wireproof_runtime.observers import compare_gobgp_snapshots as compare_gobgp_snapshots
+from wireproof_runtime.observers import (
+    parse_captured_vxlan_ethernet_frame as parse_captured_vxlan_ethernet_frame,
+)
 from wireproof_runtime.observers import parse_gobgp_fixture as parse_gobgp_fixture
 from wireproof_runtime.observers import parse_vxlan_udp_payload as parse_vxlan_udp_payload
 

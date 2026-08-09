@@ -271,3 +271,149 @@ def parse_vxlan_udp_payload(payload: bytes, capture: CaptureRef) -> VxlanParseRe
     return VxlanParseResult(
         ObservationOutcome(ObservationResult.PASS), VxlanHeader(vni, f"sha256:{digest}", capture)
     )
+
+
+@dataclass(frozen=True)
+class VlanTag:
+    """One observed outer 802.1Q/802.1ad tag, kept as its wire values."""
+
+    tpid: int
+    tci: int
+
+
+@dataclass(frozen=True)
+class CapturedVxlanEthernetFrame:
+    """Structural facts from one supplied Ethernet frame, not a forwarding assertion."""
+
+    outer_destination_mac: str
+    outer_source_mac: str
+    vlan_tags: tuple[VlanTag, ...]
+    ip_version: int
+    ip_source: str
+    ip_destination: str
+    udp_source_port: int
+    udp_destination_port: int
+    udp_checksum: int
+    vxlan: VxlanHeader
+    inner_ethernet_frame: bytes
+    inner_ethernet_sha256: str
+
+
+@dataclass(frozen=True)
+class CapturedVxlanEthernetFrameParseResult:
+    """Result with frame identity retained even when structural parsing is UNKNOWN."""
+
+    outcome: ObservationOutcome
+    capture: CaptureRef | None
+    frame_sha256: str | None
+    frame_len: int | None
+    frame: CapturedVxlanEthernetFrame | None = None
+
+
+def _captured_unknown(frame: object, capture: object) -> CapturedVxlanEthernetFrameParseResult:
+    digest = f"sha256:{hashlib.sha256(frame).hexdigest()}" if isinstance(frame, bytes) else None
+    return CapturedVxlanEthernetFrameParseResult(
+        ObservationOutcome(ObservationResult.UNKNOWN, (ObservationReason.MALFORMED_INPUT,)),
+        capture if isinstance(capture, CaptureRef) else None,
+        digest,
+        len(frame) if isinstance(frame, bytes) else None,
+    )
+
+
+def _mac(raw: bytes) -> str:
+    return ":".join(f"{octet:02x}" for octet in raw)
+
+
+def parse_captured_vxlan_ethernet_frame(
+    frame: bytes, capture: CaptureRef
+) -> CapturedVxlanEthernetFrameParseResult:
+    """Parse one Ethernet-II VXLAN frame structurally; PASS is never runtime conformance.
+
+    IPv4 options are accepted but fragments are not.  IPv6 extension headers,
+    fragmentation, reassembly, checksums, and pcap/container handling are intentionally
+    outside this fixture-only parser.
+    """
+    if not isinstance(frame, bytes) or not isinstance(capture, CaptureRef) or len(frame) < 14:
+        return _captured_unknown(frame, capture)
+    try:
+        destination, source = _mac(frame[:6]), _mac(frame[6:12])
+        offset, ether_type = 14, int.from_bytes(frame[12:14], "big")
+        tags: list[VlanTag] = []
+        while ether_type in (0x8100, 0x88A8):
+            if len(tags) == 2 or len(frame) < offset + 4:
+                return _captured_unknown(frame, capture)
+            tags.append(VlanTag(ether_type, int.from_bytes(frame[offset : offset + 2], "big")))
+            ether_type = int.from_bytes(frame[offset + 2 : offset + 4], "big")
+            offset += 4
+
+        if ether_type == 0x0800:
+            if len(frame) < offset + 20:
+                return _captured_unknown(frame, capture)
+            version_ihl = frame[offset]
+            ihl = (version_ihl & 0x0F) * 4
+            total_length = int.from_bytes(frame[offset + 2 : offset + 4], "big")
+            flags_fragment = int.from_bytes(frame[offset + 6 : offset + 8], "big")
+            if (
+                version_ihl >> 4 != 4
+                or ihl < 20
+                or total_length < ihl + 8
+                or offset + total_length > len(frame)
+                or frame[offset + 9] != 17
+                or flags_fragment & 0xBFFF
+            ):
+                return _captured_unknown(frame, capture)
+            ip_version = 4
+            ip_source = str(ipaddress.IPv4Address(frame[offset + 12 : offset + 16]))
+            ip_destination = str(ipaddress.IPv4Address(frame[offset + 16 : offset + 20]))
+            udp_offset, ip_payload_length = offset + ihl, total_length - ihl
+        elif ether_type == 0x86DD:
+            if len(frame) < offset + 40 or frame[offset] >> 4 != 6 or frame[offset + 6] != 17:
+                return _captured_unknown(frame, capture)
+            ip_payload_length = int.from_bytes(frame[offset + 4 : offset + 6], "big")
+            if ip_payload_length < 8 or offset + 40 + ip_payload_length > len(frame):
+                return _captured_unknown(frame, capture)
+            ip_version = 6
+            ip_source = str(ipaddress.IPv6Address(frame[offset + 8 : offset + 24]))
+            ip_destination = str(ipaddress.IPv6Address(frame[offset + 24 : offset + 40]))
+            udp_offset = offset + 40
+        else:
+            return _captured_unknown(frame, capture)
+
+        udp_length = int.from_bytes(frame[udp_offset + 4 : udp_offset + 6], "big")
+        if (
+            udp_length < 16
+            or udp_length != ip_payload_length
+            or udp_offset + udp_length > len(frame)
+        ):
+            return _captured_unknown(frame, capture)
+        udp_source = int.from_bytes(frame[udp_offset : udp_offset + 2], "big")
+        udp_destination = int.from_bytes(frame[udp_offset + 2 : udp_offset + 4], "big")
+        if udp_destination != 4789:
+            return _captured_unknown(frame, capture)
+        udp_payload = frame[udp_offset + 8 : udp_offset + udp_length]
+        vxlan = parse_vxlan_udp_payload(udp_payload[:8], capture)
+        inner = udp_payload[8:]
+        if vxlan.header is None or len(inner) < 14:
+            return _captured_unknown(frame, capture)
+        return CapturedVxlanEthernetFrameParseResult(
+            ObservationOutcome(ObservationResult.PASS),
+            capture,
+            f"sha256:{hashlib.sha256(frame).hexdigest()}",
+            len(frame),
+            CapturedVxlanEthernetFrame(
+                destination,
+                source,
+                tuple(tags),
+                ip_version,
+                ip_source,
+                ip_destination,
+                udp_source,
+                udp_destination,
+                int.from_bytes(frame[udp_offset + 6 : udp_offset + 8], "big"),
+                vxlan.header,
+                inner,
+                f"sha256:{hashlib.sha256(inner).hexdigest()}",
+            ),
+        )
+    except ValueError:
+        return _captured_unknown(frame, capture)
