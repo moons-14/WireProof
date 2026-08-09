@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import pytest
+from wireproof_capability import CapabilityIdentity, CapabilityState
 from wireproof_compiler import (
+    CapabilityRequirement,
     TestPack,
     compile_plan,
     compile_test_pack,
@@ -159,8 +161,25 @@ def test_test_pack_v1_artifacts_are_rejected() -> None:
     serialized = compile_test_pack(_plan()).model_dump(mode="json")
     serialized["schema_version"] = "wireproof-test-pack-1"
 
-    with pytest.raises(ValueError, match="wireproof-test-pack-2"):
+    with pytest.raises(ValueError, match="wireproof-test-pack-4"):
         TestPack.model_validate(serialized)
+
+
+def test_test_pack_capability_requirements_are_declared_canonically() -> None:
+    requirements = (
+        CapabilityRequirement(
+            clause_id="EVPN_BASE",
+            expected_identity=CapabilityIdentity(
+                vendor="frr", platform="linux", version="10.5.4", feature="evpn"
+            ),
+            minimum_state=CapabilityState.EXPOSED,
+        ),
+    )
+    pack = compile_test_pack(_plan(), requirements)
+
+    assert pack.schema_version == "wireproof-test-pack-4"
+    assert pack.requires_capabilities == requirements
+    assert compile_test_pack(_plan()).requires_capabilities == ()
 
 
 def test_tenant_projection_is_deterministic_for_semantically_reordered_input() -> None:

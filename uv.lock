@@ -367,11 +367,15 @@ name = "wireproof-capability"
 version = "0.1.0"
 source = { editable = "packages/wireproof-capability" }
 dependencies = [
+    { name = "pydantic" },
     { name = "wireproof-core" },
 ]
 
 [package.metadata]
-requires-dist = [{ name = "wireproof-core", editable = "packages/wireproof-core" }]
+requires-dist = [
+    { name = "pydantic", specifier = ">=2.10,<3" },
+    { name = "wireproof-core", editable = "packages/wireproof-core" },
+]
 
 [[package]]
 name = "wireproof-cli"
@@ -401,6 +405,7 @@ source = { editable = "packages/wireproof-compiler" }
 dependencies = [
     { name = "pydantic" },
     { name = "pyyaml" },
+    { name = "wireproof-capability" },
     { name = "wireproof-core" },
 ]
 
@@ -408,6 +413,7 @@ dependencies = [
 requires-dist = [
     { name = "pydantic", specifier = ">=2.10,<3" },
     { name = "pyyaml", specifier = ">=6,<7" },
+    { name = "wireproof-capability", editable = "packages/wireproof-capability" },
     { name = "wireproof-core", editable = "packages/wireproof-core" },
 ]
 

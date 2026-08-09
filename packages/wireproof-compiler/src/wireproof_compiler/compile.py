@@ -9,6 +9,7 @@ from typing import Any, ClassVar, Literal, cast
 
 import yaml
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from wireproof_capability import CapabilityRequirement
 from wireproof_core import FeatureContract
 
 
@@ -29,7 +30,7 @@ FRR_IMAGE_REFERENCE = (
     "quay.io/frrouting/frr@sha256:17a66aa754b4f60d58fae6cf3c357b62cfb574beb2a4cacd26d50e3df8440b78"
 )
 CONTAINERLAB_SCHEMA = "containerlab-0.59.0"
-TEST_PACK_SCHEMA: Literal["wireproof-test-pack-2"] = "wireproof-test-pack-2"
+TEST_PACK_SCHEMA: Literal["wireproof-test-pack-4"] = "wireproof-test-pack-4"
 
 
 def _is_non_string_collection(value: object) -> bool:
@@ -267,9 +268,10 @@ class TestPack(BaseModel):
     __test__: ClassVar[bool] = False
 
     model_config = ConfigDict(frozen=True, extra="forbid")
-    schema_version: Literal["wireproof-test-pack-2"] = TEST_PACK_SCHEMA
+    schema_version: Literal["wireproof-test-pack-4"] = TEST_PACK_SCHEMA
     semantic_ir_hash: str
     clauses: tuple[TestPackClause, ...]
+    requires_capabilities: tuple[CapabilityRequirement, ...] = ()
     canonical_ordering: Literal["clauses:id:lexicographic"] = "clauses:id:lexicographic"
     generator_identity: str | None = "wireproof-compiler"
     parent_canonical_hash: str | None = None
@@ -288,14 +290,28 @@ class TestPack(BaseModel):
     @model_validator(mode="before")
     @classmethod
     def normalize_clauses(cls, value: Any) -> Any:
-        if isinstance(value, Mapping) and _is_non_string_collection(value.get("clauses")):
+        if isinstance(value, Mapping):
             normalized = dict(value)
-            normalized["clauses"] = tuple(
-                sorted(
-                    value["clauses"],
-                    key=lambda item: item.id if isinstance(item, TestPackClause) else item["id"],
+            if _is_non_string_collection(value.get("clauses")):
+                normalized["clauses"] = tuple(
+                    sorted(
+                        value["clauses"],
+                        key=lambda item: (
+                            item.id if isinstance(item, TestPackClause) else item["id"]
+                        ),
+                    )
                 )
-            )
+            if _is_non_string_collection(value.get("requires_capabilities")):
+                normalized["requires_capabilities"] = tuple(
+                    sorted(
+                        value["requires_capabilities"],
+                        key=lambda item: (
+                            item.clause_id
+                            if isinstance(item, CapabilityRequirement)
+                            else item["clause_id"]
+                        ),
+                    )
+                )
             return normalized
         return value
 
@@ -306,6 +322,11 @@ class TestPack(BaseModel):
         clause_ids = tuple(clause.id for clause in self.clauses)
         if len(clause_ids) != len(set(clause_ids)):
             raise ValueError("test pack clause identities must be unique")
+        requirement_clause_ids = tuple(
+            requirement.clause_id for requirement in self.requires_capabilities
+        )
+        if len(requirement_clause_ids) != len(set(requirement_clause_ids)):
+            raise ValueError("capability requirement clause IDs must be unique")
         if (self.parent_canonical_hash is None) != (self.projection_tenant is None):
             raise ValueError("projection provenance fields must be specified together")
         if self.projection_tenant is not None and any(
@@ -397,11 +418,23 @@ def _test_pack_clause(
     )
 
 
-def compile_test_pack(plan: FeatureContract) -> TestPack:
+def compile_test_pack(
+    plan: FeatureContract,
+    requires_capabilities: tuple[CapabilityRequirement, ...] = (),
+) -> TestPack:
     """Compile validated semantic IR into canonical, unexecuted requirements."""
     if not isinstance(plan, FeatureContract):
         raise TypeError("compile_test_pack requires a validated FeatureContract")
+    if not isinstance(requires_capabilities, tuple) or not all(
+        isinstance(requirement, CapabilityRequirement) for requirement in requires_capabilities
+    ):
+        raise TypeError("requires_capabilities must be a tuple of CapabilityRequirement")
     provenance = tuple(sorted(clause.id for clause in plan.clauses))
+    unknown_requirement_clauses = {
+        requirement.clause_id for requirement in requires_capabilities
+    } - set(provenance)
+    if unknown_requirement_clauses:
+        raise ValueError("capability requirements must reference declared plan clauses")
     evpn_tenants = {entry.name: entry.tenant for entry in plan.evpn_instances}
     vrf_tenants = {entry.name: entry.tenant for entry in plan.vrfs}
     clauses = [
@@ -445,7 +478,13 @@ def compile_test_pack(plan: FeatureContract) -> TestPack:
             for address_family in sorted(entry.address_families, key=str)
         ),
     ]
-    return TestPack(semantic_ir_hash=_canonical_ir_hash(plan), clauses=tuple(clauses))
+    return TestPack(
+        semantic_ir_hash=_canonical_ir_hash(plan),
+        clauses=tuple(clauses),
+        requires_capabilities=tuple(
+            sorted(requires_capabilities, key=lambda requirement: requirement.clause_id)
+        ),
+    )
 
 
 def project_test_pack_for_tenant(pack: TestPack, tenant: str) -> TestPack:
@@ -463,6 +502,7 @@ def project_test_pack_for_tenant(pack: TestPack, tenant: str) -> TestPack:
     return TestPack(
         semantic_ir_hash=pack.semantic_ir_hash,
         clauses=tuple(clause for clause in pack.clauses if clause.tenant == normalized_tenant),
+        requires_capabilities=pack.requires_capabilities,
         generator_identity=pack.generator_identity,
         parent_canonical_hash=pack.canonical_hash,
         projection_tenant=normalized_tenant,
@@ -485,7 +525,10 @@ def load_plan(path: Path) -> FeatureContract:
     return FeatureContract.model_validate(yaml.safe_load(path.read_text()))
 
 
-def compile_plan(plan: FeatureContract) -> dict[str, Any]:
+def compile_plan(
+    plan: FeatureContract,
+    requires_capabilities: tuple[CapabilityRequirement, ...] = (),
+) -> dict[str, Any]:
     """Compile only immutable declarative reference topology; lifecycle belongs to runtime."""
     nodes = tuple(
         ContainerlabNode(name=node.name, roles=tuple(sorted(node.roles)), image=FRR_IMAGE_REFERENCE)
@@ -547,5 +590,5 @@ def compile_plan(plan: FeatureContract) -> dict[str, Any]:
         "topology": declaration,
         "image": image,
         "runtime_metadata": runtime_metadata,
-        "test_pack": compile_test_pack(plan),
+        "test_pack": compile_test_pack(plan, requires_capabilities),
     }

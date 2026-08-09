@@ -1,3 +1,5 @@
+from wireproof_capability import CapabilityRequirement
+
 from .compile import (
     CONTAINERLAB_SCHEMA,
     FRR_IMAGE_REFERENCE,
@@ -44,6 +46,7 @@ __all__ = [
     "StaticEvaluationResult",
     "StaticEvaluationBinding",
     "StaticEvaluationStatus",
+    "CapabilityRequirement",
     "bind_static_evaluation",
     "evaluate_static_fixture",
     "evaluate_static_fixture_bytes",

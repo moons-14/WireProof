@@ -78,11 +78,17 @@ It is a declarative requirement list derived from validated semantic IR: every c
 explicitly `UNEXECUTED`, carries stable source identity/provenance, and has a structured
 expected condition.  Its SHA-256 hash is over its exact canonical serialized bytes.
 
-The emitted TestPack schema is `wireproof-test-pack-2`. Version 1 artifacts are not
-read-compatible: they are rejected rather than treating missing tenant and projection
-provenance fields as global/defaulted data. Recompile the Feature Contract to migrate a
-v1 artifact. A projected v2 pack contains only clauses whose `tenant` equals its
-`projection_tenant`.
+The emitted TestPack schema is `wireproof-test-pack-4`. Versions 1 through 3 artifacts
+are not read-compatible: they are rejected rather than treating missing tenant, projection,
+or capability requirement identity as global/defaulted data. Recompile the Feature Contract to
+migrate an earlier artifact. A projected v4 pack contains only clauses whose `tenant` equals
+its `projection_tenant`.
+
+A TestPack may declare `requires_capabilities` as `(clause_id, expected_identity, minimum_state)`
+gates. The identity binding prevents evidence for one implementation surface from satisfying
+another clause with the same identifier.
+Compilation records those declarations but never probes, loads, or promotes capability
+evidence.
 
 Test packs neither select or render a target nor contain runtime observations, diagnostics,
 or results.  Executors and evidence producers add those concerns later; this sibling output
