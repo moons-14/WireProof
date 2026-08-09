@@ -11,6 +11,12 @@ from math import isfinite
 from wireproof_compiler import RuntimeMetadata
 from wireproof_evidence import EvidenceRecord, ExecutionMode, ReasonCode, Result
 
+from wireproof_runtime.frr_smoke import DockerExecutor as DockerExecutor
+from wireproof_runtime.frr_smoke import DockerResult as DockerResult
+from wireproof_runtime.frr_smoke import FrrSmokeRun as FrrSmokeRun
+from wireproof_runtime.frr_smoke import FrrSmokeState as FrrSmokeState
+from wireproof_runtime.frr_smoke import SubprocessDockerExecutor as SubprocessDockerExecutor
+
 _IMAGE = re.compile(r"^[^@:\s]+(?:/[^@:\s]+)*:[^@\s]+@sha256:[0-9a-f]{64}$")
 
 
