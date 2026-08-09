@@ -342,14 +342,19 @@ def compare_snapshots(baseline: SnapshotResult, candidate: SnapshotResult) -> Co
                     reason="advisory evidence debt",
                 )
             )
-        elif before is not None and after is not None and (
-            before.status,
-            before.answer_hash,
-            before.reason,
-        ) == (
-            after.status,
-            after.answer_hash,
-            after.reason,
+        elif (
+            before is not None
+            and after is not None
+            and (
+                before.status,
+                before.answer_hash,
+                before.reason,
+            )
+            == (
+                after.status,
+                after.answer_hash,
+                after.reason,
+            )
         ):
             comparisons.append(
                 QueryComparison(

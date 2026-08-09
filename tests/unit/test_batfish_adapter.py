@@ -148,11 +148,7 @@ def test_comparison_rejects_same_result_or_wrong_snapshot_roles() -> None:
     with pytest.raises(ValueError, match="candidate snapshot result reference"):
         compare_snapshots(baseline, same_ref_candidate)
     forged_ref_candidate = candidate.model_copy(
-        update={
-            "snapshot_ref": candidate.snapshot_ref.model_copy(
-                update={"sha256": "f" * 64}
-            )
-        }
+        update={"snapshot_ref": candidate.snapshot_ref.model_copy(update={"sha256": "f" * 64})}
     )
     with pytest.raises(ValueError, match="candidate snapshot result reference"):
         compare_snapshots(baseline, forged_ref_candidate)

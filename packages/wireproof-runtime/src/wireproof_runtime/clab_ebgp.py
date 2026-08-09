@@ -114,9 +114,8 @@ def _open_directory_at(parent_fd: int, name: str, *, private: bool = True) -> in
         info = os.fstat(descriptor)
     except OSError as exc:
         raise ClabPreparationError("run root is unavailable") from exc
-    if (
-        not stat.S_ISDIR(info.st_mode)
-        or (private and (info.st_uid != os.getuid() or stat.S_IMODE(info.st_mode) != 0o700))
+    if not stat.S_ISDIR(info.st_mode) or (
+        private and (info.st_uid != os.getuid() or stat.S_IMODE(info.st_mode) != 0o700)
     ):
         os.close(descriptor)
         raise ClabPreparationError("run root is unsafe")
@@ -748,17 +747,18 @@ topology:
                 ReasonCode.DEPLOY_FAILED, stage="DEPLOY", resource_mutation=True
             )
             return False
-        if self._artifact_identity is None or self.artifact_dir is None or not _artifact_is_intact(
-            self.artifact_dir, self._artifact_identity
+        if (
+            self._artifact_identity is None
+            or self.artifact_dir is None
+            or not _artifact_is_intact(self.artifact_dir, self._artifact_identity)
         ):
             self.failure = ClabPreflightFailure(
                 ReasonCode.DEPLOY_FAILED, stage="DEPLOY", resource_mutation=True
             )
             return False
         deploy_result = self._executor._execute(self._run_artifact, _ContainerlabOperation.DEPLOY)
-        if (
-            isinstance(deploy_result, ClabResult)
-            and deploy_result.failure == ClabPreflightFailure(ReasonCode.LAB_PRIVILEGE_UNAVAILABLE)
+        if isinstance(deploy_result, ClabResult) and deploy_result.failure == ClabPreflightFailure(
+            ReasonCode.LAB_PRIVILEGE_UNAVAILABLE
         ):
             if self.artifact_dir is not None and self._artifact_identity is not None:
                 removed = _remove_owned_run_directory(self.artifact_dir, self._artifact_identity)
@@ -807,9 +807,7 @@ topology:
             if (
                 self._artifact_identity is None
                 or self.artifact_dir is None
-                or not _artifact_is_intact(
-                self.artifact_dir, self._artifact_identity
-                )
+                or not _artifact_is_intact(self.artifact_dir, self._artifact_identity)
             ):
                 self.failure = ClabPreflightFailure(
                     ReasonCode.STATUS_FAILED, stage="STATUS", resource_mutation=True
@@ -838,8 +836,10 @@ topology:
                 ReasonCode.CLEANUP_FAILED, stage="CLEANUP", resource_mutation=True
             )
             return False
-        if self._artifact_identity is None or self.artifact_dir is None or not _artifact_is_intact(
-            self.artifact_dir, self._artifact_identity
+        if (
+            self._artifact_identity is None
+            or self.artifact_dir is None
+            or not _artifact_is_intact(self.artifact_dir, self._artifact_identity)
         ):
             self.state = ClabEbgpState.CLEANUP_FAILED
             self.failure = ClabPreflightFailure(
@@ -855,8 +855,10 @@ topology:
             return False
         artifact_dir = self.artifact_dir
         identity = self._artifact_identity
-        if artifact_dir is None or identity is None or not _remove_owned_run_directory(
-            artifact_dir, identity
+        if (
+            artifact_dir is None
+            or identity is None
+            or not _remove_owned_run_directory(artifact_dir, identity)
         ):
             self.state = ClabEbgpState.CLEANUP_FAILED
             self.failure = ClabPreflightFailure(

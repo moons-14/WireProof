@@ -469,9 +469,7 @@ def compile_test_pack(
                     f"->{entry.remote_node}:{entry.remote_as}"
                     f";af={address_family.value}"
                 ),
-                entry.model_copy(
-                    update={"address_families": frozenset((address_family,))}
-                ),
+                entry.model_copy(update={"address_families": frozenset((address_family,))}),
                 provenance,
             )
             for entry in plan.bgp_sessions

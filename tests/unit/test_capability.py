@@ -18,9 +18,7 @@ from wireproof_capability import (
 )
 from wireproof_compiler import CapabilityRequirement
 
-IDENTITY = CapabilityIdentity(
-    vendor="frr", platform="linux", version="10.5.4", feature="evpn"
-)
+IDENTITY = CapabilityIdentity(vendor="frr", platform="linux", version="10.5.4", feature="evpn")
 CLAUSE = "EVPN_BASE"
 
 
@@ -104,7 +102,11 @@ def test_probes_are_declarative_and_fixture_origin_is_immutable() -> None:
         expected_observation="enabled",
     )
     assert set(probe.model_dump()) == {
-        "identity", "clause_id", "probe_kind", "selector", "expected_observation"
+        "identity",
+        "clause_id",
+        "probe_kind",
+        "selector",
+        "expected_observation",
     }
     with pytest.raises(ValueError, match="fixture probes"):
         FixtureCapabilityProbe(

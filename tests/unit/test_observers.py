@@ -129,9 +129,10 @@ def test_vxlan_accepts_only_exact_i_flag_header() -> None:
     assert parsed.outcome.result is ObservationResult.PASS
     assert parsed.header is not None and parsed.header.vni == 291
     assert parsed.header.capture == capture
-    assert parsed.header.raw_digest == "sha256:" + hashlib.sha256(
-        b"\x08\x00\x00\x00\x00\x01\x23\x00"
-    ).hexdigest()
+    assert (
+        parsed.header.raw_digest
+        == "sha256:" + hashlib.sha256(b"\x08\x00\x00\x00\x00\x01\x23\x00").hexdigest()
+    )
 
 
 @pytest.mark.parametrize(

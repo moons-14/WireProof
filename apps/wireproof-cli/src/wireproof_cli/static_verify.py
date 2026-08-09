@@ -84,9 +84,7 @@ def static_verify(
     static_result = Result(static.status.value)
     requirements = EvidenceRequirements(
         checks=(
-            RequiredCheck(
-                check_id="static-evaluation", phase=CheckPhase.SEMANTIC, applicable=True
-            ),
+            RequiredCheck(check_id="static-evaluation", phase=CheckPhase.SEMANTIC, applicable=True),
             RequiredCheck(check_id="runtime-e2e", phase=CheckPhase.TARGET, applicable=True),
         )
     )

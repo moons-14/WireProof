@@ -8,18 +8,19 @@ configuration and test-pack compilation are planned follow-on work. It does
 ## Status
 
 The foundation provides a Python 3.12 uv workspace, typed Semantic IR validation,
-canonical hashes/provenance, and pure topology compilation. It intentionally does
-not start Docker/Containerlab or write to devices: `wireproof lab doctor` returns
-`UNKNOWN` with `LAB_ENVIRONMENT_UNAVAILABLE` until Lab CI is implemented.
+canonical hashes/provenance, pure topology compilation, and an FRR smoke
+lifecycle. It does not yet provide a full Containerlab conformance lifecycle or
+write to network devices. The manual Lab CI gate intentionally stops at
+`wireproof lab doctor` until that runtime gate is available.
 
 ## Intended prerequisites (after Foundation is implemented)
 
-NixOS with Docker enabled by the operator (for example,
-`virtualisation.docker.enable = true;`), access to the Docker socket, and a
-Containerlab-capable host will be required for Lab CI.  The repository will
-provide Python 3.12, uv, Containerlab, Docker client, inspection tools and
-developer commands through `nix develop` / `direnv allow`; it will not manage
-the Docker daemon.
+NixOS (or Linux) Lab runners need Docker enabled by the operator (for example,
+`virtualisation.docker.enable = true;`), Docker access for the runner account,
+and a Containerlab-capable host. The repository provides Python 3.12, uv,
+Containerlab, Docker client, inspection tools and developer commands through
+`nix develop` / `direnv allow`; it never manages the Docker daemon or grants
+host privileges.
 
 Start with `direnv allow` (or `nix develop`), then `uv sync --frozen` and
 `just check`. Compile the included contract with:
@@ -31,9 +32,11 @@ wireproof lab doctor
 ```
 
 NixOS operators must enable the Docker daemon themselves, for example with
-`virtualisation.docker.enable = true;`; WireProof never manages it. Lab image
-digests, container lifecycle, FRR/GoBGP/OTG, and runtime conformance remain
-unimplemented and therefore `UNKNOWN`.
+`virtualisation.docker.enable = true;`; WireProof never manages it. The current
+FRR smoke lifecycle is not a claim of EVPN, VXLAN, BGP, forwarding, or packet
+capture conformance. Containerlab lifecycle and Ixia-c/OTG traffic checks remain
+gated; Ixia-c additionally requires manual EULA and licensing approval. See the
+[release gates](docs/release.md) for CI runtime requirements and current limits.
 The M1 gate contract is in the
 [acceptance matrix](docs/architecture/acceptance-matrix.md), with dependency
 selection recorded in the

@@ -107,8 +107,7 @@ def test_test_pack_emits_a_distinct_bgp_clause_for_each_address_family() -> None
         "leaf-a:65001->leaf-b:65002;af=l2vpn-evpn",
     }
     assert {
-        tuple(clause.expected_condition["expected"]["address_families"])
-        for clause in bgp_clauses
+        tuple(clause.expected_condition["expected"]["address_families"]) for clause in bgp_clauses
     } == {("ipv4-unicast",), ("l2vpn-evpn",)}
 
 

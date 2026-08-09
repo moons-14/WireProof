@@ -8,18 +8,22 @@ fmt:
     uv run ruff format .
     nix fmt
 
+format-check:
+    uv run --frozen ruff format --check .
+    nixfmt --check flake.nix
+
 lint:
-    uv run ruff check .
+    uv run --frozen ruff check .
     deadnix flake.nix
     statix check flake.nix
 
 typecheck:
-    uv run mypy
+    PYTHONWARNINGS=error uv run --frozen mypy
 
 test:
-    uv run pytest
+    PYTHONWARNINGS=error uv run --frozen pytest
 
-check: lint typecheck test
+check: format-check lint typecheck test
 
 flake-check:
     nix flake check

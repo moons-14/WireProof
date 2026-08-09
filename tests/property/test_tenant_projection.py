@@ -8,45 +8,49 @@ from wireproof_core.model import L2VNI, L3VNI, VRF, EVPNInstance
 
 
 def _source() -> FeatureContract:
-    return FeatureContract.model_validate({
-        "clauses": [{"id": "TENANT_SCOPE", "statement": "tenant scope is required"}],
-        "nodes": [
-            {"name": "leaf-a", "interfaces": [{"name": "eth1"}, {"name": "lo0"}]},
-            {"name": "leaf-b", "interfaces": [{"name": "eth1"}, {"name": "lo0"}]},
-        ],
-        "links": [
-            {
-                "a": {"node": "leaf-a", "interface": "eth1"},
-                "b": {"node": "leaf-b", "interface": "eth1"},
-            }
-        ],
-        "vlans": [{"id": 100, "name": "global-vlan"}],
-        "vrfs": [{"name": "a-vrf", "tenant": "tenant-a"}],
-        "bgp_sessions": [
-            {
-                "local_node": "leaf-a",
-                "remote_node": "leaf-b",
-                "local_as": 65001,
-                "remote_as": 65002,
-                "address_families": ["l2vpn-evpn"],
-            }
-        ],
-        "vteps": [
-            {"node": "leaf-a", "source_interface": "lo0", "peers": ["leaf-b"]},
-            {"node": "leaf-b", "source_interface": "lo0", "peers": ["leaf-a"]},
-        ],
-        "evpn_instances": [
-            {
-                "name": "a-evpn",
-                "tenant": "tenant-a",
-                "rd": "65001:100",
-                "import_rts": ["target:65001:100"],
-                "export_rts": ["target:65001:100"],
-            }
-        ],
-        "l2_vnis": [{"vni": 10100, "vlan": 100, "evpn_instance": "a-evpn", "vtep": "leaf-a"}],
-        "l3_vnis": [{"vni": 20100, "vrf": "a-vrf", "evpn_instance": "a-evpn", "vtep": "leaf-a"}],
-    })
+    return FeatureContract.model_validate(
+        {
+            "clauses": [{"id": "TENANT_SCOPE", "statement": "tenant scope is required"}],
+            "nodes": [
+                {"name": "leaf-a", "interfaces": [{"name": "eth1"}, {"name": "lo0"}]},
+                {"name": "leaf-b", "interfaces": [{"name": "eth1"}, {"name": "lo0"}]},
+            ],
+            "links": [
+                {
+                    "a": {"node": "leaf-a", "interface": "eth1"},
+                    "b": {"node": "leaf-b", "interface": "eth1"},
+                }
+            ],
+            "vlans": [{"id": 100, "name": "global-vlan"}],
+            "vrfs": [{"name": "a-vrf", "tenant": "tenant-a"}],
+            "bgp_sessions": [
+                {
+                    "local_node": "leaf-a",
+                    "remote_node": "leaf-b",
+                    "local_as": 65001,
+                    "remote_as": 65002,
+                    "address_families": ["l2vpn-evpn"],
+                }
+            ],
+            "vteps": [
+                {"node": "leaf-a", "source_interface": "lo0", "peers": ["leaf-b"]},
+                {"node": "leaf-b", "source_interface": "lo0", "peers": ["leaf-a"]},
+            ],
+            "evpn_instances": [
+                {
+                    "name": "a-evpn",
+                    "tenant": "tenant-a",
+                    "rd": "65001:100",
+                    "import_rts": ["target:65001:100"],
+                    "export_rts": ["target:65001:100"],
+                }
+            ],
+            "l2_vnis": [{"vni": 10100, "vlan": 100, "evpn_instance": "a-evpn", "vtep": "leaf-a"}],
+            "l3_vnis": [
+                {"vni": 20100, "vrf": "a-vrf", "evpn_instance": "a-evpn", "vtep": "leaf-a"}
+            ],
+        }
+    )
 
 
 def _with_tenant_b(source: FeatureContract, vni: int, rd_suffix: int) -> FeatureContract:
@@ -56,7 +60,9 @@ def _with_tenant_b(source: FeatureContract, vni: int, rd_suffix: int) -> Feature
             "evpn_instances": (
                 *source.evpn_instances,
                 EVPNInstance(
-                    name="b-evpn", tenant="tenant-b", rd=f"65002:{rd_suffix}",
+                    name="b-evpn",
+                    tenant="tenant-b",
+                    rd=f"65002:{rd_suffix}",
                     import_rts=frozenset({f"target:65002:{rd_suffix}"}),
                     export_rts=frozenset({f"target:65002:{rd_suffix}"}),
                 ),
@@ -109,7 +115,5 @@ def test_changing_existing_tenant_changes_its_projection(rd_suffix: int) -> None
     )
 
     assert project_test_pack_for_tenant(compile_test_pack(baseline), "tenant-a") != (
-        project_test_pack_for_tenant(
-            compile_test_pack(changed), "tenant-a"
-        )
+        project_test_pack_for_tenant(compile_test_pack(changed), "tenant-a")
     )

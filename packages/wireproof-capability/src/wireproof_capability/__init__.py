@@ -110,9 +110,9 @@ class CapabilityEvidence(BaseModel):
     def require_authority_provenance_when_authoritative(self) -> CapabilityEvidence:
         if self.origin is EvidenceOrigin.FIXTURE:
             raise ValueError("fixture data cannot be capability evidence")
-        requires_authority = (
-            self.origin is EvidenceOrigin.AUTHORITATIVE
-            or self.kind in (EvidenceKind.CONFORMANCE, EvidenceKind.UNSUPPORTED)
+        requires_authority = self.origin is EvidenceOrigin.AUTHORITATIVE or self.kind in (
+            EvidenceKind.CONFORMANCE,
+            EvidenceKind.UNSUPPORTED,
         )
         if requires_authority and self.authority is None:
             raise ValueError("authoritative or terminal evidence requires authority provenance")
