@@ -30,3 +30,11 @@ for recovery and reports cleanup failure. This mitigates stale-path and
 pre-existing replacement attacks. It does not claim safety against a concurrent
 same-UID adversary that changes the tree after validation: that active race is
 outside this cooperative-process threat boundary.
+
+The manifest also binds each regular file's SHA-256 content, size, and expected
+mode through a no-follow descriptor immediately before status, probe, or cleanup.
+This detects pre-existing and observed replacements, but does not make a pathname
+safe against a malicious same-UID rename or replacement between final validation
+and Containerlab's pathname consumption or fd-relative removal. Strict protection
+of that interval would require a privileged helper with a distinct UID; it is
+future work and outside the M1 unprivileged threat boundary.

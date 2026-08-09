@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import platform as host_platform
@@ -55,13 +56,16 @@ class ClabPreparationError(RuntimeError):
     """The run-owned Containerlab artifact could not be constructed."""
 
 
+_ManifestEntry = tuple[tuple[str, ...], int, int, int, int, int, str]
+
+
 @dataclass(frozen=True)
 class _ArtifactIdentity:
     """Immutable, complete private-tree manifest minted after artifact creation."""
 
     directory_device: int
     directory_inode: int
-    manifest: tuple[tuple[tuple[str, ...], int, int, int], ...] = ()
+    manifest: tuple[_ManifestEntry, ...] = ()
 
 
 _MANIFEST_LAYOUT = (
@@ -189,13 +193,13 @@ def _artifact_identity(run_dir: Path, *, require_topology: bool = True) -> _Arti
     return _ArtifactIdentity(directory.st_dev, directory.st_ino, manifest)
 
 
-def _read_artifact_manifest(run_fd: int) -> tuple[tuple[tuple[str, ...], int, int, int], ...]:
-    """Require exactly the minted layout, with no links, special files, or additions."""
+def _read_artifact_manifest(run_fd: int) -> tuple[_ManifestEntry, ...]:
+    """Require the minted layout and bind regular files by content and mode."""
     expected_root = {"n1", "n2", "topology.clab.yml"}
     try:
         if {entry.name for entry in os.scandir(run_fd)} != expected_root:
             raise ClabPreparationError("run artifact is unsafe")
-        manifest: list[tuple[tuple[str, ...], int, int, int]] = []
+        manifest: list[_ManifestEntry] = []
         for components, expected_kind in _MANIFEST_LAYOUT:
             parent_fd = run_fd
             opened: list[int] = []
@@ -205,17 +209,60 @@ def _read_artifact_manifest(run_fd: int) -> tuple[tuple[tuple[str, ...], int, in
                     opened.append(child_fd)
                     parent_fd = child_fd
                 name = components[-1]
-                info = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
-                if stat.S_IFMT(info.st_mode) != expected_kind:
-                    raise ClabPreparationError("run artifact is unsafe")
                 if expected_kind == stat.S_IFDIR:
+                    info = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
+                    if stat.S_IFMT(info.st_mode) != expected_kind:
+                        raise ClabPreparationError("run artifact is unsafe")
                     child_fd = _open_directory_at(parent_fd, name)
                     try:
                         if {entry.name for entry in os.scandir(child_fd)} != {"frr.conf"}:
                             raise ClabPreparationError("run artifact is unsafe")
                     finally:
                         os.close(child_fd)
-                manifest.append((components, expected_kind, info.st_dev, info.st_ino))
+                    manifest.append(
+                        (
+                            components,
+                            expected_kind,
+                            info.st_dev,
+                            info.st_ino,
+                            0,
+                            stat.S_IMODE(info.st_mode),
+                            "",
+                        )
+                    )
+                else:
+                    # Bind the bytes through the descriptor that is validated immediately
+                    # before status/probe/cleanup; path metadata alone is not sufficient.
+                    descriptor = os.open(
+                        name,
+                        os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK,
+                        dir_fd=parent_fd,
+                    )
+                    try:
+                        opened_info = os.fstat(descriptor)
+                        if (
+                            not stat.S_ISREG(opened_info.st_mode)
+                            or stat.S_IMODE(opened_info.st_mode) != 0o600
+                        ):
+                            raise ClabPreparationError("run artifact is unsafe")
+                        digest = hashlib.sha256()
+                        size = 0
+                        while chunk := os.read(descriptor, 1024 * 1024):
+                            digest.update(chunk)
+                            size += len(chunk)
+                    finally:
+                        os.close(descriptor)
+                    manifest.append(
+                        (
+                            components,
+                            expected_kind,
+                            opened_info.st_dev,
+                            opened_info.st_ino,
+                            size,
+                            stat.S_IMODE(opened_info.st_mode),
+                            digest.hexdigest(),
+                        )
+                    )
             finally:
                 for descriptor in reversed(opened):
                     os.close(descriptor)

@@ -485,6 +485,37 @@ def test_cleanup_refuses_replaced_frr_configuration_and_preserves_tree() -> None
     assert run.artifact_dir.exists()
 
 
+def test_manifest_rejects_content_change_even_when_identity_metadata_matches() -> None:
+    run = ContainerlabEbgpRun(FakeExecutor())
+    assert run.up()
+    identity = run._artifact_identity
+    assert identity is not None
+    forged_manifest = tuple(
+        (*entry[:-1], "f" * 64) if entry[0] == ("n2", "frr.conf") else entry
+        for entry in identity.manifest
+    )
+    forged = clab_ebgp._ArtifactIdentity(
+        identity.directory_device, identity.directory_inode, forged_manifest
+    )
+
+    assert not clab_ebgp._artifact_is_intact(run.artifact_dir, forged)  # type: ignore[arg-type]
+    assert run.artifact_dir is not None and run.artifact_dir.exists()
+
+
+def test_fifo_replacement_fails_closed_without_blocking_or_deletion() -> None:
+    run = ContainerlabEbgpRun(FakeExecutor())
+    assert run.up()
+    assert run.artifact_dir is not None
+    config = run.artifact_dir / "n1" / "frr.conf"
+    config.unlink()
+    os.mkfifo(config, mode=0o600)
+
+    assert not run.status()
+    assert not run.down()
+    assert config.is_fifo()
+    assert run.artifact_dir.exists()
+
+
 @pytest.mark.parametrize("relative", [("foreign",), ("n1", "foreign")])
 def test_cleanup_refuses_unexpected_manifest_entry_and_preserves_tree(
     relative: tuple[str, ...],
