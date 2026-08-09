@@ -13,7 +13,7 @@
         in { default = pkgs.mkShell {
           packages = with pkgs; [
             python312 uv just jq yq-go git gh curl iproute2 tcpdump tshark graphviz
-            docker-client containerlab ruff mypy pytest deadnix statix nixfmt-rfc-style
+            docker-client containerlab ruff mypy deadnix statix nixfmt-rfc-style
           ];
         }; });
       formatter = forAllSystems (system: (import nixpkgs { inherit system; }).nixfmt-rfc-style);
