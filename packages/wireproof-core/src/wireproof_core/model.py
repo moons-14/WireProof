@@ -224,6 +224,19 @@ class FeatureContract(StrictModel):
         for session in self.bgp_sessions:
             if session.local_node not in node_names or session.remote_node not in node_names:
                 raise ValueError("BGP session references missing node")
+        bgp_peer_families = [
+            (
+                session.local_node,
+                session.local_as,
+                session.remote_node,
+                session.remote_as,
+                address_family,
+            )
+            for session in self.bgp_sessions
+            for address_family in session.address_families
+        ]
+        if len(set(bgp_peer_families)) != len(bgp_peer_families):
+            raise ValueError("duplicate BGP session peer address family")
         for vtep in self.vteps:
             if vtep.node not in node_names or vtep.source_interface not in interfaces[vtep.node]:
                 raise ValueError(

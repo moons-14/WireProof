@@ -67,3 +67,13 @@ Primary references: [Containerlab docs](https://containerlab.dev/),
 The normative gate IDs and pass/block rules are in the
 [acceptance matrix](acceptance-matrix.md). Dependency choices and deferred
 provider clients are recorded in the [dependency assessment](dependency-assessment.md).
+# Declarative test packs
+
+The compiler also emits a canonical `TestPack` beside the reference-topology output.
+It is a declarative requirement list derived from validated semantic IR: every clause is
+explicitly `UNEXECUTED`, carries stable source identity/provenance, and has a structured
+expected condition.  Its SHA-256 hash is over its exact canonical serialized bytes.
+
+Test packs neither select or render a target nor contain runtime observations, diagnostics,
+or results.  Executors and evidence producers add those concerns later; this sibling output
+does not alter the reference artifact or existing compiler hashes.

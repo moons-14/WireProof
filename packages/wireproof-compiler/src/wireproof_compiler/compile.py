@@ -29,6 +29,7 @@ FRR_IMAGE_REFERENCE = (
     "quay.io/frrouting/frr@sha256:17a66aa754b4f60d58fae6cf3c357b62cfb574beb2a4cacd26d50e3df8440b78"
 )
 CONTAINERLAB_SCHEMA = "containerlab-0.59.0"
+TEST_PACK_SCHEMA: Literal["wireproof-test-pack-1"] = "wireproof-test-pack-1"
 
 
 def _is_non_string_collection(value: object) -> bool:
@@ -222,6 +223,77 @@ class ContainerlabReferenceArtifact(BaseModel):
         return hashlib.sha256(self.canonical_bytes).hexdigest()
 
 
+class TestPackClause(BaseModel):
+    """A declarative requirement emitted by the compiler, never a test result."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+    id: str = Field(pattern=r"^test\.[a-z]+\.[0-9a-f]{16}$")
+    state: Literal["UNEXECUTED"] = "UNEXECUTED"
+    requirement_kind: Literal["vni", "rd", "evpn", "vrf", "vlan", "bgp"]
+    source_identity: str = Field(min_length=1)
+    provenance_clauses: tuple[str, ...]
+    expected_condition: dict[str, Any]
+
+    @model_validator(mode="before")
+    @classmethod
+    def normalize_provenance(cls, value: Any) -> Any:
+        if isinstance(value, Mapping) and "provenance_clauses" in value:
+            normalized = dict(value)
+            normalized["provenance_clauses"] = _normalize_string_collection(
+                normalized["provenance_clauses"]
+            )
+            return normalized
+        return value
+
+
+class TestPack(BaseModel):
+    """Canonical compiler output describing requirements for a future executor.
+
+    A TestPack deliberately contains no target, execution, observation, or result
+    data.  Those concerns belong to the runtime and evidence layers.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+    schema_version: Literal["wireproof-test-pack-1"] = TEST_PACK_SCHEMA
+    semantic_ir_hash: str
+    clauses: tuple[TestPackClause, ...]
+    canonical_ordering: Literal["clauses:id:lexicographic"] = "clauses:id:lexicographic"
+    generator_identity: str | None = "wireproof-compiler"
+
+    @model_validator(mode="before")
+    @classmethod
+    def normalize_clauses(cls, value: Any) -> Any:
+        if isinstance(value, Mapping) and _is_non_string_collection(value.get("clauses")):
+            normalized = dict(value)
+            normalized["clauses"] = tuple(
+                sorted(
+                    value["clauses"],
+                    key=lambda item: item.id if isinstance(item, TestPackClause) else item["id"],
+                )
+            )
+            return normalized
+        return value
+
+    @model_validator(mode="after")
+    def validate_canonical_invariants(self) -> TestPack:
+        if re.fullmatch(r"[0-9a-f]{64}", self.semantic_ir_hash) is None:
+            raise ValueError("semantic_ir_hash must be a lowercase SHA-256 digest")
+        clause_ids = tuple(clause.id for clause in self.clauses)
+        if len(clause_ids) != len(set(clause_ids)):
+            raise ValueError("test pack clause identities must be unique")
+        return self
+
+    @property
+    def canonical_bytes(self) -> bytes:
+        return json.dumps(
+            self.model_dump(mode="json"), sort_keys=True, separators=(",", ":")
+        ).encode()
+
+    @property
+    def canonical_hash(self) -> str:
+        return hashlib.sha256(self.canonical_bytes).hexdigest()
+
+
 def _canonical_ir_hash(plan: FeatureContract) -> str:
     """Normalize unordered IR collections before binding them into an artifact."""
 
@@ -247,6 +319,72 @@ def _canonical_ir_hash(plan: FeatureContract) -> str:
         normalize(plan.model_dump(mode="json")), sort_keys=True, separators=(",", ":")
     )
     return hashlib.sha256(payload.encode()).hexdigest()
+
+
+def _canonical_condition(value: Any) -> Any:
+    """Turn a model payload into a deterministic JSON-compatible condition."""
+    if isinstance(value, Mapping):
+        return {key: _canonical_condition(item) for key, item in sorted(value.items())}
+    if isinstance(value, (list, tuple, set, frozenset)):
+        normalized = [_canonical_condition(item) for item in value]
+        return sorted(
+            normalized, key=lambda item: json.dumps(item, sort_keys=True, separators=(",", ":"))
+        )
+    return value
+
+
+def _test_pack_clause(
+    kind: Literal["vni", "rd", "evpn", "vrf", "vlan", "bgp"],
+    identity: str,
+    source: Any,
+    provenance: tuple[str, ...],
+) -> TestPackClause:
+    digest = hashlib.sha256(f"{kind}:{identity}".encode()).hexdigest()[:16]
+    return TestPackClause(
+        id=f"test.{kind}.{digest}",
+        requirement_kind=kind,
+        source_identity=identity,
+        provenance_clauses=provenance,
+        expected_condition={
+            "object_kind": kind,
+            "expected": _canonical_condition(source.model_dump(mode="python")),
+        },
+    )
+
+
+def compile_test_pack(plan: FeatureContract) -> TestPack:
+    """Compile validated semantic IR into canonical, unexecuted requirements."""
+    if not isinstance(plan, FeatureContract):
+        raise TypeError("compile_test_pack requires a validated FeatureContract")
+    provenance = tuple(sorted(clause.id for clause in plan.clauses))
+    clauses = [
+        *(_test_pack_clause("vni", f"l2:{entry.vni}", entry, provenance) for entry in plan.l2_vnis),
+        *(_test_pack_clause("vni", f"l3:{entry.vni}", entry, provenance) for entry in plan.l3_vnis),
+        *(_test_pack_clause("rd", entry.rd, entry, provenance) for entry in plan.evpn_instances),
+        *(
+            _test_pack_clause("evpn", entry.name, entry, provenance)
+            for entry in plan.evpn_instances
+        ),
+        *(_test_pack_clause("vrf", entry.name, entry, provenance) for entry in plan.vrfs),
+        *(_test_pack_clause("vlan", str(entry.id), entry, provenance) for entry in plan.vlans),
+        *(
+            _test_pack_clause(
+                "bgp",
+                (
+                    f"{entry.local_node}:{entry.local_as}"
+                    f"->{entry.remote_node}:{entry.remote_as}"
+                    f";af={address_family.value}"
+                ),
+                entry.model_copy(
+                    update={"address_families": frozenset((address_family,))}
+                ),
+                provenance,
+            )
+            for entry in plan.bgp_sessions
+            for address_family in sorted(entry.address_families, key=str)
+        ),
+    ]
+    return TestPack(semantic_ir_hash=_canonical_ir_hash(plan), clauses=tuple(clauses))
 
 
 class RuntimeMetadata(BaseModel):
@@ -327,4 +465,5 @@ def compile_plan(plan: FeatureContract) -> dict[str, Any]:
         "topology": declaration,
         "image": image,
         "runtime_metadata": runtime_metadata,
+        "test_pack": compile_test_pack(plan),
     }

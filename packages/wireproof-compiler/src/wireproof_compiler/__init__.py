@@ -6,8 +6,11 @@ from .compile import (
     ContainerlabReferenceArtifact,
     ImageDeclaration,
     RuntimeMetadata,
+    TestPack,
+    TestPackClause,
     TopologyDeclaration,
     compile_plan,
+    compile_test_pack,
     load_plan,
 )
 
@@ -19,7 +22,10 @@ __all__ = [
     "ContainerlabReferenceArtifact",
     "ImageDeclaration",
     "RuntimeMetadata",
+    "TestPack",
+    "TestPackClause",
     "TopologyDeclaration",
     "compile_plan",
+    "compile_test_pack",
     "load_plan",
 ]
