@@ -28,6 +28,14 @@ from wireproof_runtime.frr_smoke import DockerResult as DockerResult
 from wireproof_runtime.frr_smoke import FrrSmokeRun as FrrSmokeRun
 from wireproof_runtime.frr_smoke import FrrSmokeState as FrrSmokeState
 from wireproof_runtime.frr_smoke import SubprocessDockerExecutor as SubprocessDockerExecutor
+from wireproof_runtime.ixia_c import IxiaCAssessment as IxiaCAssessment
+from wireproof_runtime.ixia_c import IxiaCComponent as IxiaCComponent
+from wireproof_runtime.ixia_c import IxiaCComponentInventory as IxiaCComponentInventory
+from wireproof_runtime.ixia_c import IxiaCContract as IxiaCContract
+from wireproof_runtime.ixia_c import IxiaCDeclaredState as IxiaCDeclaredState
+from wireproof_runtime.ixia_c import IxiaCEulaIntent as IxiaCEulaIntent
+from wireproof_runtime.ixia_c import IxiaCInvocation as IxiaCInvocation
+from wireproof_runtime.ixia_c import IxiaCReason as IxiaCReason
 from wireproof_runtime.observers import CapturedVxlanEthernetFrame as CapturedVxlanEthernetFrame
 from wireproof_runtime.observers import (
     CapturedVxlanEthernetFrameParseResult as CapturedVxlanEthernetFrameParseResult,
