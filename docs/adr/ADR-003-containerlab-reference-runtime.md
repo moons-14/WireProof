@@ -21,6 +21,15 @@ unavailable residue reinspection is `UNKNOWN`, never cleanup success.
 with an executor and is not a sandbox. The CLI uses only the runtime scenario
 factory, which fixes the real executor and preserves the closed command surface.
 
+**Privileged fallback:** only `wireproof lab frr-smoke clab-ebgp-v4
+--allow-privileged-controller --change-id CHANGE_ID` may retry the exact typed
+`LAB_PRIVILEGE_UNAVAILABLE` host preflight failure. This creates a per-operation
+root-equivalent controller with a fixed Containerlab 0.59.0 digest, fixed
+mounts, host PID/network, and no environment or caller-command inputs. It is
+removed by exact ID only after exact name, label, and digest ownership inspection;
+an ownership or cleanup deviation is residue, never a broad deletion. Controller
+execution is real runtime metadata but conformance remains `UNKNOWN`.
+
 **Artifact cleanup boundary:** each generated run directory is private (`0700`) and
 is removed only after a complete immutable inode manifest confirms exactly the
 minted `n1`/`n2` directories, their `frr.conf` files, and topology file. Cleanup

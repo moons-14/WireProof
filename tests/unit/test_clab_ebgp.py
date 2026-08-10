@@ -3,7 +3,10 @@ from __future__ import annotations
 import json
 import os
 import stat
+import subprocess
+import threading
 from pathlib import Path
+from types import SimpleNamespace
 from uuid import UUID
 
 import pytest
@@ -19,6 +22,78 @@ from wireproof_runtime.clab_ebgp import (
     ContainerlabEbgpRun,
     SubprocessContainerlabExecutor,
 )
+
+_CONTROLLER_ID = "a" * 64
+
+
+def _controller_docker(
+    executor: clab_ebgp._PrivilegedContainerlabExecutor, *, mode: str = "happy"
+) -> list[tuple[str, ...]]:
+    """Install a closed Docker transcript; it never contacts a daemon."""
+    calls: list[tuple[str, ...]] = []
+    created: tuple[str, ...] | None = None
+    image_inspects = 0
+
+    def completed(
+        argv: tuple[str, ...], code: int = 0, output: str = ""
+    ) -> subprocess.CompletedProcess[str]:
+        return subprocess.CompletedProcess(argv, code, output, "")
+
+    def docker(argv: tuple[str, ...]) -> subprocess.CompletedProcess[str]:
+        nonlocal created, image_inspects
+        calls.append(argv)
+        if argv[:3] == ("docker", "image", "inspect"):
+            image_inspects += 1
+            if mode == "repo-digest-mismatch" and image_inspects > 1:
+                return completed(argv, output="foreign@sha256:" + "b" * 64 + "\n")
+            return completed(argv, output=clab_ebgp.CONTAINERLAB_CONTROLLER_REPO_DIGEST + "\n")
+        if argv[:3] == ("docker", "container", "inspect"):
+            target = argv[3]
+            if target.startswith("wp-clabctl-"):
+                return completed(argv, 0 if mode == "collision" else 1)
+            if created is None or target != _CONTROLLER_ID:
+                return completed(argv, 1)
+            if mode == "ownership-mismatch":
+                return completed(argv, output="[]")
+            name = created[created.index("--name") + 1]
+            labels = {
+                created[index + 1].split("=", 1)[0]: created[index + 1].split("=", 1)[1]
+                for index, value in enumerate(created)
+                if value == "--label"
+            }
+            if mode == "label-mismatch":
+                labels["io.wireproof.managed"] = "false"
+            return completed(
+                argv,
+                output=json.dumps(
+                    [
+                        {
+                            "Id": _CONTROLLER_ID,
+                            "Name": f"/{name}",
+                            "Config": {
+                                "Labels": labels,
+                                "Image": clab_ebgp.CONTAINERLAB_CONTROLLER_IMAGE,
+                            },
+                        }
+                    ]
+                ),
+            )
+        if argv[:2] == ("docker", "create"):
+            created = argv
+            return completed(
+                argv, output=("bad-id" if mode == "malformed-id" else _CONTROLLER_ID) + "\n"
+            )
+        if argv[:3] == ("docker", "start", "-a"):
+            if mode == "timeout":
+                raise subprocess.TimeoutExpired(argv, 1)
+            return completed(argv, 1 if mode == "nonzero" else 0)
+        if argv[:3] == ("docker", "rm", "-f"):
+            return completed(argv, 1 if mode == "cleanup-failure" else 0)
+        raise AssertionError(f"unexpected Docker command: {argv!r}")
+
+    executor._docker = docker  # type: ignore[method-assign]
+    executor._mount_prerequisites = lambda: True  # type: ignore[method-assign]
+    return calls
 
 
 class FakeExecutor:
@@ -88,6 +163,211 @@ def test_runtime_root_hides_the_real_containerlab_executor() -> None:
     run = wireproof_runtime.new_containerlab_ebgp_run()
     assert isinstance(run, ContainerlabEbgpRun)
     assert not hasattr(run, "executor")
+    assert not hasattr(wireproof_runtime, "PrivilegedContainerlabExecutor")
+    assert not hasattr(wireproof_runtime, "new_privileged_containerlab_ebgp_run")
+
+
+def test_privileged_controller_rejects_direct_construction_without_cli_capability(
+    tmp_path: Path,
+) -> None:
+    with pytest.raises(ValueError, match="authorization"):
+        clab_ebgp._PrivilegedContainerlabExecutor("change-1")  # type: ignore[arg-type]
+    with pytest.raises(ValueError, match="authorization"):
+        wireproof_runtime._new_privileged_containerlab_ebgp_run(  # type: ignore[call-arg]
+            object(), object(), "change-1", tmp_path
+        )
+    assert not hasattr(wireproof_runtime, "new_privileged_containerlab_ebgp_run")
+
+
+def test_privileged_controller_authorizer_consumes_only_issued_exact_permits(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr(
+        clab_ebgp.subprocess,
+        "run",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("no Docker")),
+    )
+    authorizer = clab_ebgp._PrivilegedControllerAuthorizer(tmp_path)
+    permit = authorizer.issue("change-1")
+    assert isinstance(
+        wireproof_runtime._new_privileged_containerlab_ebgp_run(
+            authorizer, permit, "change-1", tmp_path
+        ),
+        ContainerlabEbgpRun,
+    )
+    for forged, change_id, root in (
+        (permit, "change-1", tmp_path),
+        (clab_ebgp._PrivilegedControllerPermit(), "change-1", tmp_path),
+        (authorizer.issue("change-2"), "change-1", tmp_path),
+        (authorizer.issue("change-3"), "change-3", tmp_path / "wrong-root"),
+    ):
+        with pytest.raises(ValueError, match="authorization"):
+            wireproof_runtime._new_privileged_containerlab_ebgp_run(
+                authorizer, forged, change_id, root
+            )
+
+
+def test_privileged_controller_authorizer_allows_exactly_one_simultaneous_consume(
+    tmp_path: Path,
+) -> None:
+    authorizer = clab_ebgp._PrivilegedControllerAuthorizer(tmp_path)
+    permit = authorizer.issue("change-1")
+    results: list[str] = []
+
+    def consume() -> None:
+        try:
+            wireproof_runtime._new_privileged_containerlab_ebgp_run(
+                authorizer, permit, "change-1", tmp_path
+            )
+            results.append("success")
+        except ValueError:
+            results.append("denial")
+
+    first = threading.Thread(target=consume)
+    second = threading.Thread(target=consume)
+    first.start()
+    second.start()
+    first.join()
+    second.join()
+    assert sorted(results) == ["denial", "success"]
+
+
+@pytest.mark.parametrize(
+    "source",
+    ["/var/run/docker.sock", "/var/run/netns", "/etc/hosts", "/var/lib/docker/containers"],
+)
+@pytest.mark.parametrize("mode", ["missing", "wrong-type"])
+def test_privileged_controller_mount_prerequisite_blocks_docker(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, source: str, mode: str
+) -> None:
+    path = Path(source)
+    monkeypatch.setattr(clab_ebgp, "_FIXED_CONTROLLER_MOUNTS", ((path, stat.S_IFDIR),))
+
+    def lstat(_self: Path) -> SimpleNamespace:
+        if mode == "missing":
+            raise FileNotFoundError()
+        return SimpleNamespace(st_mode=stat.S_IFREG | 0o644)
+
+    monkeypatch.setattr(Path, "lstat", lstat)
+    executor = clab_ebgp._PrivilegedContainerlabExecutor(
+        clab_ebgp._PrivilegedControllerBinding("change-1", tmp_path)
+    )
+    executor._docker = lambda _argv: (_ for _ in ()).throw(AssertionError("no Docker"))  # type: ignore[method-assign]
+    result = executor.preflight()
+    assert result.failure == ClabPreflightFailure(
+        ReasonCode.LAB_CONTROLLER_MOUNT_PREREQUISITE_FAILED
+    )
+
+
+def test_privileged_controller_revalidates_mounts_before_each_docker_call(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    enabled = True
+    calls: list[tuple[str, ...]] = []
+    executor = clab_ebgp._PrivilegedContainerlabExecutor(
+        clab_ebgp._PrivilegedControllerBinding("change-1", tmp_path)
+    )
+    executor._mount_prerequisites = lambda: enabled  # type: ignore[method-assign]
+
+    def docker_run(argv: tuple[str, ...], **_kwargs: object) -> subprocess.CompletedProcess[str]:
+        calls.append(argv)
+        return subprocess.CompletedProcess(
+            argv, 0, clab_ebgp.CONTAINERLAB_CONTROLLER_REPO_DIGEST + "\n", ""
+        )
+
+    monkeypatch.setattr(clab_ebgp.subprocess, "run", docker_run)
+    assert executor.preflight().ok
+    enabled = False
+    with pytest.raises(clab_ebgp._ControllerMountPrerequisiteError):
+        executor._docker(("docker", "create", "must-not-run"))
+    assert len(calls) == 1
+
+
+def test_privileged_controller_rejects_repo_and_artifact_mapping_mismatches(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    foreign_repo = tmp_path / "foreign-repo"
+    foreign_repo.mkdir()
+    executor = clab_ebgp._PrivilegedContainerlabExecutor(
+        clab_ebgp._PrivilegedControllerBinding("change-1", foreign_repo)
+    )
+    calls = _controller_docker(executor)
+    assert not ContainerlabEbgpRun(executor).up()
+    assert not any(argv[:2] == ("docker", "create") for argv in calls)
+
+    executor = clab_ebgp._PrivilegedContainerlabExecutor(
+        clab_ebgp._PrivilegedControllerBinding("change-1", tmp_path)
+    )
+    calls = _controller_docker(executor)
+    escaped = tmp_path.parent / "escaped-artifact"
+    escaped.mkdir(exist_ok=True)
+    topology = escaped / "topology.clab.yml"
+    topology.write_text("name: escaped\n")
+    artifact = executor._mint_run_artifact(topology, "wp-ebgp-escaped")
+    object.__setattr__(artifact, "identity", clab_ebgp._ArtifactIdentity(0, 0))
+    monkeypatch.setattr(clab_ebgp, "_artifact_is_intact", lambda *_args: True)
+    assert not executor._execute(artifact, clab_ebgp._ContainerlabOperation.DEPLOY).ok
+    assert not calls
+
+
+@pytest.mark.parametrize(
+    ("mode", "created", "removed"),
+    [
+        ("collision", False, False),
+        ("malformed-id", True, False),
+        ("ownership-mismatch", True, False),
+        ("label-mismatch", True, False),
+        ("repo-digest-mismatch", True, False),
+        ("timeout", True, True),
+        ("nonzero", True, True),
+        ("cleanup-failure", True, True),
+    ],
+)
+def test_privileged_controller_refuses_or_cleans_only_the_exact_id(
+    tmp_path: Path, mode: str, created: bool, removed: bool
+) -> None:
+    executor = clab_ebgp._PrivilegedContainerlabExecutor(
+        clab_ebgp._PrivilegedControllerBinding("change-1", tmp_path)
+    )
+    calls = _controller_docker(executor, mode=mode)
+    run = ContainerlabEbgpRun(executor)
+
+    assert not run.up()
+    create_calls = [argv for argv in calls if argv[:2] == ("docker", "create")]
+    rm_calls = [argv for argv in calls if argv[:3] == ("docker", "rm", "-f")]
+    assert bool(create_calls) is created
+    assert bool(rm_calls) is removed
+    assert all(argv == ("docker", "rm", "-f", _CONTROLLER_ID) for argv in rm_calls)
+    assert not any(
+        "--all" in argv or any("wp-clabctl-" in part for part in argv[3:]) for argv in rm_calls
+    )
+
+
+def test_privileged_controller_happy_path_uses_closed_create_start_and_exact_cleanup(
+    tmp_path: Path,
+) -> None:
+    executor = clab_ebgp._PrivilegedContainerlabExecutor(
+        clab_ebgp._PrivilegedControllerBinding("change-1", tmp_path)
+    )
+    calls = _controller_docker(executor)
+    run = ContainerlabEbgpRun(executor)
+
+    assert run.up() and run.down()
+    create_calls = [argv for argv in calls if argv[:2] == ("docker", "create")]
+    start_calls = [argv for argv in calls if argv[:3] == ("docker", "start", "-a")]
+    rm_calls = [argv for argv in calls if argv[:3] == ("docker", "rm", "-f")]
+    assert len(create_calls) == len(start_calls) == len(rm_calls) == 2
+    assert all(argv == ("docker", "start", "-a", _CONTROLLER_ID) for argv in start_calls)
+    assert all(argv == ("docker", "rm", "-f", _CONTROLLER_ID) for argv in rm_calls)
+    create = create_calls[0]
+    assert create[create.index("--platform") + 1] == "linux/amd64"
+    assert (
+        "--privileged" in create
+        and ("--network", "host")
+        == create[create.index("--network") : create.index("--network") + 2]
+    )
+    assert "/usr/bin/containerlab" in create
+    assert "--rm" not in create and "--env" not in create
 
 
 def test_closed_lifecycle_artifact_and_exact_argv() -> None:
@@ -187,6 +467,9 @@ def test_destroy_failure_preserves_artifact_for_recovery() -> None:
     assert artifact_dir is not None
     assert not run.down()
     assert run.state is ClabEbgpState.CLEANUP_FAILED
+    assert run.failure == ClabPreflightFailure(
+        ReasonCode.CLEANUP_FAILED, stage="CLEANUP", resource_mutation=True
+    )
     assert artifact_dir.exists()
     assert run.recovery_destroy_command == (
         "containerlab",
@@ -196,6 +479,36 @@ def test_destroy_failure_preserves_artifact_for_recovery() -> None:
         "--name",
         run.lab_name,
         "--cleanup",
+    )
+
+
+def test_privileged_controller_destroy_failure_has_controller_only_code(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    executor = clab_ebgp._PrivilegedContainerlabExecutor(
+        clab_ebgp._PrivilegedControllerBinding("change-1", tmp_path)
+    )
+    monkeypatch.setattr(
+        executor,
+        "preflight",
+        lambda: ClabResult(
+            True,
+            version=CONTAINERLAB_VERSION,
+            platform="linux/amd64",
+            repo_digest=FRR_EBGP_REPO_DIGEST,
+        ),
+    )
+    monkeypatch.setattr(
+        executor,
+        "_execute",
+        lambda _artifact, operation, _node=None: ClabResult(
+            operation is clab_ebgp._ContainerlabOperation.DEPLOY
+        ),
+    )
+    run = ContainerlabEbgpRun(executor)
+    assert run.up() and not run.down()
+    assert run.failure == ClabPreflightFailure(
+        ReasonCode.LAB_DESTROY_FAILED, stage="CLEANUP", resource_mutation=True
     )
 
 
@@ -285,6 +598,9 @@ def test_local_artifact_removal_failure_is_reported_and_preserved(
     monkeypatch.setattr(clab_ebgp, "_remove_owned_run_directory", lambda *_: False)
     assert not run.down()
     assert run.state is ClabEbgpState.CLEANUP_FAILED
+    assert run.failure == ClabPreflightFailure(
+        ReasonCode.LAB_ARTIFACT_CLEANUP_FAILED, stage="CLEANUP", resource_mutation=True
+    )
     assert artifact_dir.exists()
 
 

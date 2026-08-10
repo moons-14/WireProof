@@ -41,3 +41,13 @@ The M1 gate contract is in the
 [acceptance matrix](docs/architecture/acceptance-matrix.md), with dependency
 selection recorded in the
 [dependency assessment](docs/architecture/dependency-assessment.md).
+
+On a trusted lab host only, the fixed Containerlab smoke may explicitly retry a
+host privilege denial through a root-equivalent controller:
+
+```sh
+wireproof lab frr-smoke clab-ebgp-v4 --allow-privileged-controller --change-id change-123
+```
+
+This opt-in is per invocation, has no arbitrary Docker command or mount surface,
+and remains `UNKNOWN` conformance evidence.

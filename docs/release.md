@@ -24,3 +24,8 @@ by the runner account, and Containerlab installed through the declared Nix
 development environment. WireProof neither manages the Docker daemon nor grants
 host privileges. Ixia-c / OTG traffic tests remain inactive until the applicable
 manual EULA and licensing gate has been satisfied.
+
+The exceptional privileged controller fallback is per invocation only: it needs
+`--allow-privileged-controller` and a validated `--change-id` on the fixed
+`clab-ebgp-v4` scenario. It is root-equivalent and must be used only on a trusted
+operator-managed lab host; its evidence remains non-promotable (`UNKNOWN`).
