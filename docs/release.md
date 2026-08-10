@@ -18,14 +18,10 @@ deliberately blocks before it is available.
 
 ## Operator requirements
 
-Pure checks require no Docker access. Lab runners are operator-managed NixOS or
-Linux hosts with a Docker daemon enabled by the operator, a Docker client usable
-by the runner account, and Containerlab installed through the declared Nix
-development environment. WireProof neither manages the Docker daemon nor grants
-host privileges. Ixia-c / OTG traffic tests remain inactive until the applicable
-manual EULA and licensing gate has been satisfied.
-
-The exceptional privileged controller fallback is per invocation only: it needs
-`--allow-privileged-controller` and a validated `--change-id` on the fixed
-`clab-ebgp-v4` scenario. It is root-equivalent and must be used only on a trusted
-operator-managed lab host; its evidence remains non-promotable (`UNKNOWN`).
+Pure checks require no Docker access. The fixed Containerlab eBGP-v4 scenario is
+run manually by an operator as root with `sudo -- nix develop --command uv run
+--locked wireproof lab frr-smoke clab-ebgp-v4 --repeat 1`. The CLI never elevates
+privileges or invokes arbitrary `sudo` commands; start a second iteration only
+after the first cleans up successfully. Its conformance remains `UNKNOWN`.
+Ixia-c / OTG traffic tests remain inactive until the applicable manual EULA and
+licensing gate has been satisfied.

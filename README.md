@@ -42,12 +42,12 @@ The M1 gate contract is in the
 selection recorded in the
 [dependency assessment](docs/architecture/dependency-assessment.md).
 
-On a trusted lab host only, the fixed Containerlab smoke may explicitly retry a
-host privilege denial through a root-equivalent controller:
 
-```sh
-wireproof lab frr-smoke clab-ebgp-v4 --allow-privileged-controller --change-id change-123
-```
+For the fixed Containerlab eBGP-v4 scenario, the operator runs the reviewed command
+manually as root:
 
-This opt-in is per invocation, has no arbitrary Docker command or mount surface,
-and remains `UNKNOWN` conformance evidence.
+`sudo -- nix develop --command uv run --locked wireproof lab frr-smoke clab-ebgp-v4 --repeat 1`
+
+The CLI never elevates privileges or invokes arbitrary `sudo` commands. Run a
+second iteration only after the first has cleaned up successfully. This remains
+`UNKNOWN` conformance evidence.

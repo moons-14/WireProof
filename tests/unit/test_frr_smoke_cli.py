@@ -12,6 +12,15 @@ from wireproof_runtime import FrrSmokeState, clab_ebgp
 from wireproof_runtime.clab_ebgp import ClabPreflightFailure, ClabResult
 
 
+def test_clab_cli_has_no_controller_flags_or_sudo_path() -> None:
+    source = Path(main.__file__).read_text()
+
+    assert "--allow-privileged-controller" not in source
+    assert "--change-id" not in source
+    assert "privileged_controller" not in source
+    assert '"sudo"' not in source
+
+
 class _FakeRun:
     created: list[str] = []
     fail_up = False
@@ -197,92 +206,6 @@ def test_clab_privilege_preflight_failure_is_closed(
         "stage": "PREFLIGHT",
         "resource_mutation": False,
     }
-
-
-def test_clab_privileged_controller_requires_a_valid_change_id() -> None:
-    runner = CliRunner()
-    assert (
-        runner.invoke(
-            main.app, ["lab", "frr-smoke", "clab-ebgp-v4", "--allow-privileged-controller"]
-        ).exit_code
-        != 0
-    )
-    assert (
-        runner.invoke(
-            main.app,
-            [
-                "lab",
-                "frr-smoke",
-                "clab-ebgp-v4",
-                "--allow-privileged-controller",
-                "--change-id",
-                "bad id",
-            ],
-        ).exit_code
-        != 0
-    )
-    assert (
-        runner.invoke(
-            main.app, ["lab", "frr-smoke", "change-1", "--allow-privileged-controller"]
-        ).exit_code
-        != 0
-    )
-
-
-def test_clab_privileged_controller_retries_only_exact_privilege_failure(
-    monkeypatch: MonkeyPatch,
-) -> None:
-    class DeniedRun:
-        run_id = "host"
-        lab_name = "host"
-        deploy_attempted = False
-        resolved_repo_digest = None
-        failure = ClabPreflightFailure(code=ReasonCode.LAB_PRIVILEGE_UNAVAILABLE)
-
-        def __init__(self) -> None:
-            self.state = SimpleNamespace(value="PREPARED")
-
-        def up(self) -> bool:
-            return False
-
-    class ControllerRun:
-        run_id = "controller"
-        lab_name = "controller"
-        deploy_attempted = True
-        resolved_repo_digest = "digest"
-
-        def __init__(self) -> None:
-            self.state = SimpleNamespace(value="PREPARED")
-
-        def up(self) -> bool:
-            self.state = SimpleNamespace(value="DEPLOYED")
-            return True
-
-        def status(self) -> bool:
-            self.state = SimpleNamespace(value="VERIFIED")
-            return True
-
-        def down(self) -> bool:
-            self.state = SimpleNamespace(value="CLEANED")
-            return True
-
-    monkeypatch.setattr(main, "new_containerlab_ebgp_run", DeniedRun)
-    monkeypatch.setattr(
-        main, "_new_privileged_containerlab_ebgp_run", lambda *_args: ControllerRun()
-    )
-    result = CliRunner().invoke(
-        main.app,
-        [
-            "lab",
-            "frr-smoke",
-            "clab-ebgp-v4",
-            "--allow-privileged-controller",
-            "--change-id",
-            "change-1",
-        ],
-    )
-    assert result.exit_code == 0, result.output
-    assert json.loads(result.output)[0]["run_id"] == "controller"
 
 
 def test_clab_prepare_failure_emits_json_without_artifact_residue(

@@ -4,18 +4,16 @@ import json
 import re
 import subprocess
 from pathlib import Path
-from typing import Annotated, Any
+from typing import Annotated
 
 import typer
 from wireproof_compiler import compile_plan, load_plan
-from wireproof_evidence import ReasonCode, Result
+from wireproof_evidence import Result
 from wireproof_runtime import (
     ClabPreparationError,
     FrrSmokeRun,
     FrrSmokeState,
     SubprocessDockerExecutor,
-    _new_privileged_containerlab_ebgp_run,
-    _new_privileged_controller_authorizer,
     lab_doctor,
     new_containerlab_ebgp_run,
 )
@@ -122,24 +120,11 @@ def _smoke_result(change_id: str) -> tuple[dict[str, object], bool]:
 def frr_smoke(
     scenario: str,
     repeat: Annotated[int, typer.Option(min=1, max=2)] = 1,
-    allow_privileged_controller: Annotated[bool, typer.Option()] = False,
-    change_id: Annotated[str | None, typer.Option()] = None,
 ) -> None:
     """Run a closed FRR smoke scenario."""
     if scenario == "clab-ebgp-v4":
-        if allow_privileged_controller and (
-            change_id is None or not _CHANGE_ID.fullmatch(change_id)
-        ):
-            raise typer.BadParameter("--change-id must be ASCII [A-Za-z0-9][A-Za-z0-9._-]{0,63}")
-        if change_id is not None and not allow_privileged_controller:
-            raise typer.BadParameter("--change-id requires --allow-privileged-controller")
-        authorizer = (
-            _new_privileged_controller_authorizer() if allow_privileged_controller else None
-        )
-        _clab_ebgp_smoke(repeat, allow_privileged_controller, change_id, authorizer)
+        _clab_ebgp_smoke(repeat)
         return
-    if allow_privileged_controller or change_id is not None:
-        raise typer.BadParameter("privileged controller options require clab-ebgp-v4")
     if not _CHANGE_ID.fullmatch(scenario):
         raise typer.BadParameter("must select clab-ebgp-v4")
 
@@ -158,9 +143,6 @@ def frr_smoke(
 
 def _clab_ebgp_smoke(
     repeat: int,
-    allow_privileged_controller: bool = False,
-    change_id: str | None = None,
-    authorizer: Any | None = None,
 ) -> None:
     """Emit only the contractually fixed Containerlab eBGP smoke record."""
     records: list[dict[str, object]] = []
@@ -170,19 +152,6 @@ def _clab_ebgp_smoke(
         up = status = down = False
         try:
             up = run.up()
-            if (
-                not up
-                and allow_privileged_controller
-                and change_id is not None
-                and not run.deploy_attempted
-                and authorizer is not None
-                and getattr(getattr(run, "failure", None), "code", None)
-                is ReasonCode.LAB_PRIVILEGE_UNAVAILABLE
-            ):
-                run = _new_privileged_containerlab_ebgp_run(
-                    authorizer, authorizer.issue(change_id), change_id, Path.cwd()
-                )
-                up = run.up()
             if up:
                 status = run.status()
         except (ClabPreparationError, OSError, subprocess.TimeoutExpired):
@@ -203,12 +172,6 @@ def _clab_ebgp_smoke(
             "conformance": "UNKNOWN",
             "resolved_repo_digest": run.resolved_repo_digest,
         }
-        if allow_privileged_controller:
-            record["privileged_controller"] = bool(
-                isinstance(getattr(run, "_executor", None), object)
-                and type(getattr(run, "_executor", None)).__name__
-                == "_PrivilegedContainerlabExecutor"
-            )
         failure = getattr(run, "failure", None)
         if failure is not None:
             record["failure"] = {

@@ -7,7 +7,6 @@ from collections.abc import Callable
 from dataclasses import InitVar, dataclass, field
 from enum import StrEnum
 from math import isfinite
-from pathlib import Path
 
 from wireproof_compiler import RuntimeMetadata
 from wireproof_evidence import EvidenceRecord, ExecutionMode, ReasonCode, Result
@@ -17,11 +16,6 @@ from wireproof_runtime.clab_ebgp import ClabPreparationError as ClabPreparationE
 from wireproof_runtime.clab_ebgp import ContainerlabEbgpRun as ContainerlabEbgpRun
 from wireproof_runtime.clab_ebgp import (
     SubprocessContainerlabExecutor as _SubprocessContainerlabExecutor,
-)
-from wireproof_runtime.clab_ebgp import (
-    _PrivilegedContainerlabExecutor,
-    _PrivilegedControllerAuthorizer,
-    _PrivilegedControllerPermit,
 )
 from wireproof_runtime.frr_smoke import DockerExecutor as DockerExecutor
 from wireproof_runtime.frr_smoke import DockerResult as DockerResult
@@ -64,26 +58,6 @@ _IMAGE = re.compile(r"^[^@:\s]+(?:/[^@:\s]+)*:[^@\s]+@sha256:[0-9a-f]{64}$")
 def new_containerlab_ebgp_run() -> ContainerlabEbgpRun:
     """Create the closed real-executor scenario used by the CLI."""
     return ContainerlabEbgpRun(_SubprocessContainerlabExecutor())
-
-
-def _new_privileged_controller_authorizer() -> _PrivilegedControllerAuthorizer:
-    """Create the non-global authorization registry for one CLI invocation."""
-    return _PrivilegedControllerAuthorizer(Path.cwd())
-
-
-def _new_privileged_containerlab_ebgp_run(
-    authorizer: _PrivilegedControllerAuthorizer,
-    permit: _PrivilegedControllerPermit,
-    change_id: str,
-    repo_root: Path,
-) -> ContainerlabEbgpRun:
-    if (
-        type(authorizer) is not _PrivilegedControllerAuthorizer
-        or type(permit) is not _PrivilegedControllerPermit
-    ):
-        raise ValueError("privileged controller authorization is unavailable")
-    binding = authorizer.consume(permit, change_id, repo_root)
-    return ContainerlabEbgpRun(_PrivilegedContainerlabExecutor(binding))
 
 
 class ImageRef(str):

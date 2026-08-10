@@ -10,7 +10,6 @@ import re
 import shutil
 import stat
 import subprocess
-import threading
 from dataclasses import dataclass, field
 from enum import StrEnum
 from pathlib import Path
@@ -27,14 +26,9 @@ FRR_EBGP_REPO_DIGEST = (
     "quay.io/frrouting/frr@sha256:17a66aa754b4f60d58fae6cf3c357b62cfb574beb2a4cacd26d50e3df8440b78"
 )
 CONTAINERLAB_VERSION = "0.59.0"
-CONTAINERLAB_CONTROLLER_IMAGE = (
-    "ghcr.io/srl-labs/clab@sha256:4ea78de9bdb4623ed49790dc076e6630804b060e03cb0102e7767a3f22bee0d8"
-)
-CONTAINERLAB_CONTROLLER_REPO_DIGEST = CONTAINERLAB_CONTROLLER_IMAGE
 _PROBE = "vtysh -c 'show ip bgp summary json'"
 _ANSI_ESCAPE_PATTERN = r"\x1b\[[0-?]*[ -/]*[@-~]"
 _CONTAINERLAB_VERSION_PATTERN = r"(?m)^[\t ]*version:[\t ]*([0-9]+\.[0-9]+\.[0-9]+)[\t ]*$"
-_CONTAINERLAB_PRIVILEGE_DIAGNOSTIC = "Error: containerlab requires sudo privileges to run\n"
 _PREFLIGHT_FAILURE_CODES = frozenset(
     {
         ReasonCode.LAB_PLATFORM_UNSUPPORTED,
@@ -45,7 +39,6 @@ _PREFLIGHT_FAILURE_CODES = frozenset(
         ReasonCode.LAB_CONTAINERLAB_VERSION_MISMATCH,
         ReasonCode.LAB_FRR_IMAGE_INSPECT_FAILED,
         ReasonCode.LAB_FRR_IMAGE_REPO_DIGEST_MISMATCH,
-        ReasonCode.LAB_CONTROLLER_MOUNT_PREREQUISITE_FAILED,
     }
 )
 
@@ -515,6 +508,11 @@ class SubprocessContainerlabExecutor:
                 False,
                 failure=ClabPreflightFailure(ReasonCode.LAB_PLATFORM_UNSUPPORTED),
             )
+        if os.geteuid() != 0:
+            return ClabResult(
+                False,
+                failure=ClabPreflightFailure(ReasonCode.LAB_PRIVILEGE_UNAVAILABLE),
+            )
         if shutil.which("containerlab") is None:
             return ClabResult(
                 False,
@@ -597,11 +595,6 @@ class SubprocessContainerlabExecutor:
                 failure=ClabPreflightFailure(ReasonCode.LAB_CONTAINERLAB_VERSION_CHECK_FAILED),
             )
         if inspect.returncode != 0:
-            if getattr(inspect, "stderr", "") == _CONTAINERLAB_PRIVILEGE_DIAGNOSTIC:
-                return ClabResult(
-                    False,
-                    failure=ClabPreflightFailure(ReasonCode.LAB_PRIVILEGE_UNAVAILABLE),
-                )
             return ClabResult(
                 False,
                 failure=ClabPreflightFailure(ReasonCode.LAB_CONTAINERLAB_VERSION_CHECK_FAILED),
@@ -637,429 +630,6 @@ class SubprocessContainerlabExecutor:
         except (OSError, subprocess.TimeoutExpired):
             return ClabResult(False)
         return ClabResult(completed.returncode == 0, completed.stdout)
-
-
-_CHANGE_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}")
-_DOCKER_ID = re.compile(r"[0-9a-f]{64}")
-_FIXED_CONTROLLER_MOUNTS: tuple[tuple[Path, int], ...] = (
-    (Path("/var/run/docker.sock"), stat.S_IFSOCK),
-    (Path("/var/run/netns"), stat.S_IFDIR),
-    (Path("/var/lib/docker/containers"), stat.S_IFDIR),
-)
-_NIXOS_HOSTS_PATH = Path("/etc/hosts")
-_NIXOS_STATIC_HOSTS_PATH = Path("/etc/static/hosts")
-_NIX_STORE_OBJECT = re.compile(r"^/nix/store/[0-9abcdfghijklmnpqrsvwxyz]{32}-hosts$")
-
-
-def _fixed_controller_hosts_source() -> Path | None:
-    """Accept only NixOS's exact hosts -> static -> immutable-store chain."""
-    try:
-        link = _NIXOS_HOSTS_PATH.lstat()
-        if (
-            not stat.S_ISLNK(link.st_mode)
-            or _NIXOS_HOSTS_PATH.readlink() != _NIXOS_STATIC_HOSTS_PATH
-        ):
-            return None
-        static = _NIXOS_STATIC_HOSTS_PATH.lstat()
-        store_target = _NIXOS_STATIC_HOSTS_PATH.readlink()
-        if (
-            not stat.S_ISLNK(static.st_mode)
-            or not store_target.is_absolute()
-            or not _NIX_STORE_OBJECT.fullmatch(str(store_target))
-        ):
-            return None
-        target = store_target.lstat()
-    except OSError:
-        return None
-    if (
-        stat.S_ISLNK(target.st_mode)
-        or not stat.S_ISREG(target.st_mode)
-        or target.st_uid != 0
-        or stat.S_IMODE(target.st_mode) & 0o222
-    ):
-        return None
-    return store_target
-
-
-def _fixed_controller_mounts_available() -> bool:
-    """Accept only existing fixed mount sources of their exact expected type.
-
-    A final-component symlink is rejected so Docker cannot resolve an unreviewed source.
-    Parent system links (such as `/var/run`) remain part of the fixed absolute path.
-    """
-    for path, expected_type in _FIXED_CONTROLLER_MOUNTS:
-        try:
-            info = path.lstat()
-        except OSError:
-            return False
-        if stat.S_ISLNK(info.st_mode) or stat.S_IFMT(info.st_mode) != expected_type:
-            return False
-    return _fixed_controller_hosts_source() is not None
-
-
-class _ControllerMountPrerequisiteError(RuntimeError):
-    """A fixed host mount changed between closed controller operations."""
-
-
-@dataclass(frozen=True)
-class _PrivilegedControllerBinding:
-    change_id: str
-    repo_root: Path
-
-
-class _PrivilegedControllerPermit:
-    """Identity-only permit: the binding never travels with this object."""
-
-
-@dataclass
-class _PrivilegedControllerAuthorizer:
-    """One command invocation's private, non-global permit registry."""
-
-    repo_root: Path
-    _permits: dict[_PrivilegedControllerPermit, _PrivilegedControllerBinding] = field(
-        default_factory=dict, init=False, repr=False
-    )
-    _lock: threading.Lock = field(default_factory=threading.Lock, init=False, repr=False)
-
-    def __post_init__(self) -> None:
-        self.repo_root = self.repo_root.resolve()
-
-    def issue(self, change_id: str) -> _PrivilegedControllerPermit:
-        if not _CHANGE_ID.fullmatch(change_id):
-            raise ValueError("privileged controller authorization is unavailable")
-        permit = _PrivilegedControllerPermit()
-        with self._lock:
-            self._permits[permit] = _PrivilegedControllerBinding(change_id, self.repo_root)
-        return permit
-
-    def consume(
-        self, permit: object, change_id: str, repo_root: Path
-    ) -> _PrivilegedControllerBinding:
-        with self._lock:
-            binding = (
-                self._permits.pop(permit, None)
-                if type(permit) is _PrivilegedControllerPermit
-                else None
-            )
-        if (
-            binding is None
-            or binding.change_id != change_id
-            or binding.repo_root != repo_root.resolve()
-        ):
-            raise ValueError("privileged controller authorization is unavailable")
-        return binding
-
-
-@dataclass
-class _PrivilegedContainerlabExecutor:
-    """Closed, per-invocation root-equivalent Containerlab controller.
-
-    This executor deliberately has no command, image, mount, or environment inputs.
-    """
-
-    binding: _PrivilegedControllerBinding
-    timeout_seconds: float = 60.0
-    _registered_artifacts: dict[int, object] = field(default_factory=dict, init=False, repr=False)
-    _hosts_identity: tuple[int, int] | None = field(default=None, init=False, repr=False)
-
-    def __post_init__(self) -> None:
-        if not isinstance(self.binding, _PrivilegedControllerBinding):
-            raise ValueError("privileged controller authorization is unavailable")
-        if not _CHANGE_ID.fullmatch(self.binding.change_id):
-            raise ValueError("change id is invalid")
-        self.repo_root = self.binding.repo_root.resolve()
-        if not self.repo_root.is_dir():
-            raise ValueError("repository root is unavailable")
-
-    def _mint_run_artifact(self, topology: Path, lab_name: str) -> _RunArtifact:
-        artifact = _RunArtifact(topology, lab_name)
-        self._registered_artifacts[id(artifact)] = artifact._capability
-        return artifact
-
-    def _docker(self, argv: tuple[str, ...]) -> subprocess.CompletedProcess[str]:
-        if not self._mount_prerequisites():
-            raise _ControllerMountPrerequisiteError
-        return subprocess.run(
-            argv, capture_output=True, text=True, check=False, timeout=self.timeout_seconds
-        )
-
-    def _mount_prerequisites(self) -> bool:
-        if not _fixed_controller_mounts_available():
-            return False
-        source = _fixed_controller_hosts_source()
-        if source is None:
-            return False
-        try:
-            info = source.lstat()
-        except OSError:
-            return False
-        identity = (info.st_dev, info.st_ino)
-        if self._hosts_identity is None:
-            self._hosts_identity = identity
-            return True
-        return self._hosts_identity == identity
-
-    def _hosts_source(self) -> Path | None:
-        return _fixed_controller_hosts_source()
-
-    def preflight(self) -> ClabResult:
-        if not self._mount_prerequisites():
-            return ClabResult(
-                False,
-                failure=ClabPreflightFailure(ReasonCode.LAB_CONTROLLER_MOUNT_PREREQUISITE_FAILED),
-            )
-        try:
-            image = self._docker(
-                (
-                    "docker",
-                    "image",
-                    "inspect",
-                    CONTAINERLAB_CONTROLLER_IMAGE,
-                    "--format",
-                    "{{index .RepoDigests 0}}",
-                )
-            )
-        except _ControllerMountPrerequisiteError:
-            return ClabResult(
-                False,
-                failure=ClabPreflightFailure(ReasonCode.LAB_CONTROLLER_MOUNT_PREREQUISITE_FAILED),
-            )
-        except (OSError, subprocess.TimeoutExpired):
-            return ClabResult(
-                False, failure=ClabPreflightFailure(ReasonCode.LAB_FRR_IMAGE_INSPECT_FAILED)
-            )
-        if image.returncode != 0 or image.stdout.strip() != CONTAINERLAB_CONTROLLER_REPO_DIGEST:
-            return ClabResult(
-                False, failure=ClabPreflightFailure(ReasonCode.LAB_FRR_IMAGE_REPO_DIGEST_MISMATCH)
-            )
-        return ClabResult(
-            True,
-            version=CONTAINERLAB_VERSION,
-            platform="linux/amd64",
-            repo_digest=FRR_EBGP_REPO_DIGEST,
-        )
-
-    def _owned(self, container_id: str, name: str, run_id: str) -> bool:
-        if not _DOCKER_ID.fullmatch(container_id):
-            return False
-        try:
-            inspected = self._docker(("docker", "container", "inspect", container_id))
-            image = self._docker(
-                (
-                    "docker",
-                    "image",
-                    "inspect",
-                    CONTAINERLAB_CONTROLLER_IMAGE,
-                    "--format",
-                    "{{index .RepoDigests 0}}",
-                )
-            )
-        except (OSError, subprocess.TimeoutExpired):
-            return False
-        if (
-            inspected.returncode != 0
-            or image.returncode != 0
-            or image.stdout.strip() != CONTAINERLAB_CONTROLLER_REPO_DIGEST
-        ):
-            return False
-        try:
-            data = json.loads(inspected.stdout)
-            item = data[0]
-            labels = item["Config"]["Labels"]
-            return bool(
-                item["Id"] == container_id
-                and item["Name"] == f"/{name}"
-                and item["Config"]["Image"] == CONTAINERLAB_CONTROLLER_IMAGE
-                and labels
-                == {
-                    "io.wireproof.managed": "true",
-                    "io.wireproof.role": "containerlab-controller",
-                    "io.wireproof.run-id": run_id,
-                    "io.wireproof.change-id": self.binding.change_id,
-                }
-            )
-        except (KeyError, IndexError, TypeError, json.JSONDecodeError):
-            return False
-
-    def _execute(
-        self, artifact: _RunArtifact, operation: _ContainerlabOperation, node: str | None = None
-    ) -> ClabResult:
-        if (
-            not isinstance(artifact, _RunArtifact)
-            or self._registered_artifacts.get(id(artifact)) is not artifact._capability
-            or artifact.identity is None
-            or not _artifact_is_intact(artifact.topology.parent, artifact.identity)
-        ):
-            return ClabResult(False)
-        try:
-            closed = artifact.argv(operation, node)
-        except ValueError:
-            return ClabResult(False)
-        # The topology's private absolute paths are mounted at precisely the same paths.
-        artifact_dir = artifact.topology.parent.resolve()
-        if not artifact_dir.is_relative_to(self.repo_root) or not _artifact_is_intact(
-            artifact_dir, artifact.identity
-        ):
-            return ClabResult(False)
-        run_id = uuid4().hex
-        name = f"wp-clabctl-{run_id}"
-        labels = (
-            "--label",
-            "io.wireproof.managed=true",
-            "--label",
-            "io.wireproof.role=containerlab-controller",
-            "--label",
-            f"io.wireproof.run-id={run_id}",
-            "--label",
-            f"io.wireproof.change-id={self.binding.change_id}",
-        )
-        try:
-            hosts_source = self._hosts_source()
-            if hosts_source is None:
-                return ClabResult(
-                    False,
-                    failure=ClabPreflightFailure(
-                        ReasonCode.LAB_CONTROLLER_MOUNT_PREREQUISITE_FAILED
-                    ),
-                )
-            collision = self._docker(("docker", "container", "inspect", name))
-        except _ControllerMountPrerequisiteError:
-            return ClabResult(
-                False,
-                failure=ClabPreflightFailure(ReasonCode.LAB_CONTROLLER_MOUNT_PREREQUISITE_FAILED),
-            )
-        except (OSError, subprocess.TimeoutExpired):
-            return ClabResult(
-                False,
-                failure=ClabPreflightFailure(
-                    ReasonCode.LAB_CONTROLLER_RESIDUE, "CONTROLLER_CREATE", True
-                ),
-            )
-        if collision.returncode == 0:
-            return ClabResult(
-                False,
-                failure=ClabPreflightFailure(
-                    ReasonCode.LAB_CONTROLLER_OWNERSHIP_FAILED, "CONTROLLER_CREATE"
-                ),
-            )
-        try:
-            created = self._docker(
-                (
-                    "docker",
-                    "create",
-                    "--name",
-                    name,
-                    *labels,
-                    "--platform",
-                    "linux/amd64",
-                    "--privileged",
-                    "--network",
-                    "host",
-                    "--pid",
-                    "host",
-                    "--mount",
-                    "type=bind,src=/var/run/docker.sock,dst=/var/run/docker.sock",
-                    "--mount",
-                    "type=bind,src=/var/run/netns,dst=/var/run/netns",
-                    "--mount",
-                    f"type=bind,src={hosts_source},dst=/etc/hosts,readonly",
-                    "--mount",
-                    "type=bind,src=/var/lib/docker/containers,dst=/var/lib/docker/containers,readonly",
-                    "--mount",
-                    f"type=bind,src={self.repo_root},dst={self.repo_root},readonly",
-                    "--mount",
-                    f"type=bind,src={artifact_dir},dst={artifact_dir}",
-                    "--workdir",
-                    str(artifact_dir),
-                    CONTAINERLAB_CONTROLLER_IMAGE,
-                    "/usr/bin/containerlab",
-                    *closed[1:],
-                )
-            )
-        except _ControllerMountPrerequisiteError:
-            return ClabResult(
-                False,
-                failure=ClabPreflightFailure(ReasonCode.LAB_CONTROLLER_MOUNT_PREREQUISITE_FAILED),
-            )
-        except (OSError, subprocess.TimeoutExpired):
-            return ClabResult(
-                False,
-                failure=ClabPreflightFailure(
-                    ReasonCode.LAB_CONTROLLER_RESIDUE, "CONTROLLER_CREATE", True
-                ),
-            )
-        container_id = created.stdout.strip()
-        try:
-            owned_after_create = self._owned(container_id, name, run_id)
-        except _ControllerMountPrerequisiteError:
-            return ClabResult(
-                False,
-                failure=ClabPreflightFailure(
-                    ReasonCode.LAB_CONTROLLER_RESIDUE, "CONTROLLER_MOUNT_PREREQUISITE", True
-                ),
-            )
-        if (
-            created.returncode != 0
-            or not _DOCKER_ID.fullmatch(container_id)
-            or not owned_after_create
-        ):
-            return ClabResult(
-                False,
-                failure=ClabPreflightFailure(
-                    ReasonCode.LAB_CONTROLLER_OWNERSHIP_FAILED, "CONTROLLER_INSPECT", True
-                ),
-            )
-        result: subprocess.CompletedProcess[str] | None = None
-        timed_out = False
-        try:
-            result = self._docker(("docker", "start", "-a", container_id))
-        except _ControllerMountPrerequisiteError:
-            return ClabResult(
-                False,
-                failure=ClabPreflightFailure(
-                    ReasonCode.LAB_CONTROLLER_RESIDUE, "CONTROLLER_MOUNT_PREREQUISITE", True
-                ),
-            )
-        except (OSError, subprocess.TimeoutExpired):
-            timed_out = True
-        try:
-            owned = self._owned(container_id, name, run_id)
-        except _ControllerMountPrerequisiteError:
-            return ClabResult(
-                False,
-                failure=ClabPreflightFailure(
-                    ReasonCode.LAB_CONTROLLER_RESIDUE, "CONTROLLER_MOUNT_PREREQUISITE", True
-                ),
-            )
-        if not owned:
-            return ClabResult(
-                False,
-                failure=ClabPreflightFailure(
-                    ReasonCode.LAB_CONTROLLER_RESIDUE, "CONTROLLER_OWNERSHIP", True
-                ),
-            )
-        try:
-            removed = self._docker(("docker", "rm", "-f", container_id))
-        except _ControllerMountPrerequisiteError:
-            return ClabResult(
-                False,
-                failure=ClabPreflightFailure(
-                    ReasonCode.LAB_CONTROLLER_RESIDUE, "CONTROLLER_MOUNT_PREREQUISITE", True
-                ),
-            )
-        except (OSError, subprocess.TimeoutExpired):
-            removed = None
-        if removed is None or removed.returncode != 0:
-            return ClabResult(
-                False,
-                failure=ClabPreflightFailure(
-                    ReasonCode.LAB_CONTROLLER_RESIDUE, "CONTROLLER_CLEANUP", True
-                ),
-            )
-        return ClabResult(
-            not timed_out and result is not None and result.returncode == 0,
-            result.stdout if result else "",
-        )
 
 
 def _frr(local: str, peer: str, asn: int, peer_as: int, router_id: str) -> str:
@@ -1233,28 +803,6 @@ topology:
             )
             return False
         deploy_result = self._executor._execute(self._run_artifact, _ContainerlabOperation.DEPLOY)
-        if isinstance(deploy_result, ClabResult) and deploy_result.failure == ClabPreflightFailure(
-            ReasonCode.LAB_PRIVILEGE_UNAVAILABLE
-        ):
-            if self.artifact_dir is not None and self._artifact_identity is not None:
-                removed = _remove_owned_run_directory(self.artifact_dir, self._artifact_identity)
-                if not removed:
-                    self.state = ClabEbgpState.CLEANUP_FAILED
-                    self.failure = ClabPreflightFailure(
-                        ReasonCode.CLEANUP_FAILED, stage="CLEANUP", resource_mutation=True
-                    )
-                    return False
-            else:
-                self.state = ClabEbgpState.CLEANUP_FAILED
-                self.failure = ClabPreflightFailure(
-                    ReasonCode.CLEANUP_FAILED, stage="CLEANUP", resource_mutation=True
-                )
-                return False
-            self.artifact_dir = None
-            self._run_artifact = None
-            self._artifact_identity = None
-            self.failure = deploy_result.failure
-            return False
         # Cleanup is required even when the closed deploy command reports failure.
         self.deploy_attempted = True
         if not deploy_result.ok:
@@ -1326,13 +874,7 @@ topology:
         if not destroyed:
             self.state = ClabEbgpState.CLEANUP_FAILED
             self.failure = ClabPreflightFailure(
-                (
-                    ReasonCode.LAB_DESTROY_FAILED
-                    if isinstance(self._executor, _PrivilegedContainerlabExecutor)
-                    else ReasonCode.CLEANUP_FAILED
-                ),
-                stage="CLEANUP",
-                resource_mutation=True,
+                ReasonCode.CLEANUP_FAILED, stage="CLEANUP", resource_mutation=True
             )
             return False
         artifact_dir = self.artifact_dir
