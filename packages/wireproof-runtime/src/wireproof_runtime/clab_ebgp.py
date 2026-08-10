@@ -644,9 +644,41 @@ _DOCKER_ID = re.compile(r"[0-9a-f]{64}")
 _FIXED_CONTROLLER_MOUNTS: tuple[tuple[Path, int], ...] = (
     (Path("/var/run/docker.sock"), stat.S_IFSOCK),
     (Path("/var/run/netns"), stat.S_IFDIR),
-    (Path("/etc/hosts"), stat.S_IFREG),
     (Path("/var/lib/docker/containers"), stat.S_IFDIR),
 )
+_NIXOS_HOSTS_PATH = Path("/etc/hosts")
+_NIXOS_STATIC_HOSTS_PATH = Path("/etc/static/hosts")
+_NIX_STORE_OBJECT = re.compile(r"^/nix/store/[0-9abcdfghijklmnpqrsvwxyz]{32}-hosts$")
+
+
+def _fixed_controller_hosts_source() -> Path | None:
+    """Accept only NixOS's exact hosts -> static -> immutable-store chain."""
+    try:
+        link = _NIXOS_HOSTS_PATH.lstat()
+        if (
+            not stat.S_ISLNK(link.st_mode)
+            or _NIXOS_HOSTS_PATH.readlink() != _NIXOS_STATIC_HOSTS_PATH
+        ):
+            return None
+        static = _NIXOS_STATIC_HOSTS_PATH.lstat()
+        store_target = _NIXOS_STATIC_HOSTS_PATH.readlink()
+        if (
+            not stat.S_ISLNK(static.st_mode)
+            or not store_target.is_absolute()
+            or not _NIX_STORE_OBJECT.fullmatch(str(store_target))
+        ):
+            return None
+        target = store_target.lstat()
+    except OSError:
+        return None
+    if (
+        stat.S_ISLNK(target.st_mode)
+        or not stat.S_ISREG(target.st_mode)
+        or target.st_uid != 0
+        or stat.S_IMODE(target.st_mode) & 0o222
+    ):
+        return None
+    return store_target
 
 
 def _fixed_controller_mounts_available() -> bool:
@@ -662,7 +694,7 @@ def _fixed_controller_mounts_available() -> bool:
             return False
         if stat.S_ISLNK(info.st_mode) or stat.S_IFMT(info.st_mode) != expected_type:
             return False
-    return True
+    return _fixed_controller_hosts_source() is not None
 
 
 class _ControllerMountPrerequisiteError(RuntimeError):
@@ -728,6 +760,7 @@ class _PrivilegedContainerlabExecutor:
     binding: _PrivilegedControllerBinding
     timeout_seconds: float = 60.0
     _registered_artifacts: dict[int, object] = field(default_factory=dict, init=False, repr=False)
+    _hosts_identity: tuple[int, int] | None = field(default=None, init=False, repr=False)
 
     def __post_init__(self) -> None:
         if not isinstance(self.binding, _PrivilegedControllerBinding):
@@ -751,7 +784,23 @@ class _PrivilegedContainerlabExecutor:
         )
 
     def _mount_prerequisites(self) -> bool:
-        return _fixed_controller_mounts_available()
+        if not _fixed_controller_mounts_available():
+            return False
+        source = _fixed_controller_hosts_source()
+        if source is None:
+            return False
+        try:
+            info = source.lstat()
+        except OSError:
+            return False
+        identity = (info.st_dev, info.st_ino)
+        if self._hosts_identity is None:
+            self._hosts_identity = identity
+            return True
+        return self._hosts_identity == identity
+
+    def _hosts_source(self) -> Path | None:
+        return _fixed_controller_hosts_source()
 
     def preflight(self) -> ClabResult:
         if not self._mount_prerequisites():
@@ -865,6 +914,14 @@ class _PrivilegedContainerlabExecutor:
             f"io.wireproof.change-id={self.binding.change_id}",
         )
         try:
+            hosts_source = self._hosts_source()
+            if hosts_source is None:
+                return ClabResult(
+                    False,
+                    failure=ClabPreflightFailure(
+                        ReasonCode.LAB_CONTROLLER_MOUNT_PREREQUISITE_FAILED
+                    ),
+                )
             collision = self._docker(("docker", "container", "inspect", name))
         except _ControllerMountPrerequisiteError:
             return ClabResult(
@@ -905,7 +962,7 @@ class _PrivilegedContainerlabExecutor:
                     "--mount",
                     "type=bind,src=/var/run/netns,dst=/var/run/netns",
                     "--mount",
-                    "type=bind,src=/etc/hosts,dst=/etc/hosts,readonly",
+                    f"type=bind,src={hosts_source},dst=/etc/hosts,readonly",
                     "--mount",
                     "type=bind,src=/var/lib/docker/containers,dst=/var/lib/docker/containers,readonly",
                     "--mount",

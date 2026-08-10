@@ -93,6 +93,7 @@ def _controller_docker(
 
     executor._docker = docker  # type: ignore[method-assign]
     executor._mount_prerequisites = lambda: True  # type: ignore[method-assign]
+    executor._hosts_source = lambda: Path("/etc/static/hosts")  # type: ignore[method-assign]
     return calls
 
 
@@ -259,6 +260,165 @@ def test_privileged_controller_mount_prerequisite_blocks_docker(
     )
 
 
+@pytest.mark.parametrize(
+    ("link_target", "target_mode", "target_owner", "expected"),
+    [
+        ("/etc/static/hosts", stat.S_IFREG | 0o444, 0, True),
+        ("/etc/other-hosts", stat.S_IFREG | 0o444, 0, False),
+        ("/etc/static/hosts", stat.S_IFLNK | 0o777, 0, False),
+        ("/etc/static/hosts", stat.S_IFREG | 0o644, 0, False),
+        ("/etc/static/hosts", stat.S_IFREG | 0o444, 1000, False),
+        ("/etc/static/hosts", stat.S_IFREG | 0o444, 65534, False),
+    ],
+)
+def test_privileged_controller_accepts_only_immutable_nixos_hosts_target(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    link_target: str,
+    target_mode: int,
+    target_owner: int,
+    expected: bool,
+) -> None:
+    hosts = tmp_path / "hosts"
+    static_hosts = tmp_path / "static-hosts"
+    store_hosts = Path("/nix/store/0123456789abcdfghijklmnpqrsvwxyz-hosts")
+    monkeypatch.setattr(clab_ebgp, "_NIXOS_HOSTS_PATH", hosts)
+    monkeypatch.setattr(clab_ebgp, "_NIXOS_STATIC_HOSTS_PATH", static_hosts)
+
+    def lstat(path: Path) -> SimpleNamespace:
+        if path == hosts:
+            return SimpleNamespace(st_mode=stat.S_IFLNK | 0o777, st_uid=0)
+        if path == static_hosts:
+            return SimpleNamespace(st_mode=stat.S_IFLNK | 0o777, st_uid=0)
+        assert path == store_hosts
+        return SimpleNamespace(st_mode=target_mode, st_uid=target_owner)
+
+    monkeypatch.setattr(Path, "lstat", lstat)
+    monkeypatch.setattr(
+        Path,
+        "readlink",
+        lambda path: (
+            static_hosts
+            if path == hosts and link_target == "/etc/static/hosts"
+            else (Path(link_target) if path == hosts else store_hosts)
+        ),
+    )
+    assert (clab_ebgp._fixed_controller_hosts_source() is not None) is expected
+
+
+def test_privileged_controller_rejects_hosts_target_swap_before_use(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    hosts = tmp_path / "hosts"
+    static_hosts = tmp_path / "static-hosts"
+    target = static_hosts
+    store_hosts = Path("/nix/store/0123456789abcdfghijklmnpqrsvwxyz-hosts")
+    monkeypatch.setattr(clab_ebgp, "_NIXOS_HOSTS_PATH", hosts)
+    monkeypatch.setattr(clab_ebgp, "_NIXOS_STATIC_HOSTS_PATH", static_hosts)
+    monkeypatch.setattr(
+        Path,
+        "lstat",
+        lambda path: SimpleNamespace(
+            st_mode=(stat.S_IFLNK | 0o777)
+            if path in {hosts, static_hosts}
+            else (stat.S_IFREG | 0o444),
+            st_uid=0,
+        ),
+    )
+    monkeypatch.setattr(Path, "readlink", lambda path: target if path == hosts else store_hosts)
+    assert clab_ebgp._fixed_controller_hosts_source() == store_hosts
+    target = tmp_path / "swapped-hosts"
+    assert clab_ebgp._fixed_controller_hosts_source() is None
+
+
+def test_privileged_controller_rejects_nixos_store_target_traversal(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    hosts = tmp_path / "hosts"
+    static_hosts = tmp_path / "static-hosts"
+    traversal = Path("/nix/store/0123456789abcdfghijklmnpqrsvwxyz-hosts/../../etc/shadow")
+    monkeypatch.setattr(clab_ebgp, "_NIXOS_HOSTS_PATH", hosts)
+    monkeypatch.setattr(clab_ebgp, "_NIXOS_STATIC_HOSTS_PATH", static_hosts)
+    monkeypatch.setattr(
+        Path,
+        "lstat",
+        lambda _path: SimpleNamespace(st_mode=stat.S_IFLNK | 0o777, st_uid=0),
+    )
+    monkeypatch.setattr(Path, "readlink", lambda path: static_hosts if path == hosts else traversal)
+    assert clab_ebgp._fixed_controller_hosts_source() is None
+
+
+@pytest.mark.parametrize(
+    "target",
+    [
+        "/nix/store/0123456789abcdfghijklmnpqrsvwxy-hosts",
+        "/nix/store/00123456789abcdfghijklmnpqrsvwxyz-hosts",
+        "/nix/store/0123456789abcdfghijklmnpqrsvwxyzh-hosts",
+        "/nix/store/0123456789abcdfghijklmnpqrsvwxyzo-hosts",
+        "/nix/store/0123456789abcdfghijklmnpqrsvwxyze-hosts",
+        "/nix/store/0123456789abcdfghijklmnpqrsvwxyzt-hosts",
+        "/nix/store/0123456789abcdfghijklmnpqrsvwxyzu-hosts",
+        "/nix/store/0123456789abcdfghijklmnpqrsvwxyz-not-hosts",
+        "/nix/store/0123456789abcdfghijklmnpqrsvwxyz-hosts/extra",
+    ],
+)
+def test_privileged_controller_rejects_noncanonical_nixos_hosts_store_name(target: str) -> None:
+    assert clab_ebgp._NIX_STORE_OBJECT.fullmatch(target) is None
+
+
+def test_privileged_controller_rejects_overflow_hosts_owner_before_docker(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    hosts = tmp_path / "hosts"
+    static_hosts = tmp_path / "static-hosts"
+    store_hosts = Path("/nix/store/0123456789abcdfghijklmnpqrsvwxyz-hosts")
+    monkeypatch.setattr(clab_ebgp, "_FIXED_CONTROLLER_MOUNTS", ())
+    monkeypatch.setattr(clab_ebgp, "_NIXOS_HOSTS_PATH", hosts)
+    monkeypatch.setattr(clab_ebgp, "_NIXOS_STATIC_HOSTS_PATH", static_hosts)
+    monkeypatch.setattr(
+        Path,
+        "lstat",
+        lambda path: SimpleNamespace(
+            st_mode=(stat.S_IFLNK | 0o777)
+            if path in {hosts, static_hosts}
+            else (stat.S_IFREG | 0o444),
+            st_uid=65534 if path == store_hosts else 0,
+        ),
+    )
+    monkeypatch.setattr(
+        Path, "readlink", lambda path: static_hosts if path == hosts else store_hosts
+    )
+    executor = clab_ebgp._PrivilegedContainerlabExecutor(
+        clab_ebgp._PrivilegedControllerBinding("change-1", tmp_path)
+    )
+    executor._docker = lambda _argv: (_ for _ in ()).throw(AssertionError("no Docker"))  # type: ignore[method-assign]
+    assert executor.preflight().failure == ClabPreflightFailure(
+        ReasonCode.LAB_CONTROLLER_MOUNT_PREREQUISITE_FAILED
+    )
+
+
+def test_privileged_controller_rejects_nixos_hosts_final_identity_swap(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    source = Path("/nix/store/0123456789abcdfghijklmnpqrsvwxyz-hosts")
+    identity = 1
+    monkeypatch.setattr(clab_ebgp, "_FIXED_CONTROLLER_MOUNTS", ())
+    monkeypatch.setattr(clab_ebgp, "_fixed_controller_hosts_source", lambda: source)
+    monkeypatch.setattr(
+        Path,
+        "lstat",
+        lambda _path: SimpleNamespace(
+            st_mode=stat.S_IFREG | 0o444, st_uid=0, st_dev=1, st_ino=identity
+        ),
+    )
+    executor = clab_ebgp._PrivilegedContainerlabExecutor(
+        clab_ebgp._PrivilegedControllerBinding("change-1", tmp_path)
+    )
+    assert executor._mount_prerequisites()
+    identity = 2
+    assert not executor._mount_prerequisites()
+
+
 def test_privileged_controller_revalidates_mounts_before_each_docker_call(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
@@ -368,6 +528,7 @@ def test_privileged_controller_happy_path_uses_closed_create_start_and_exact_cle
     )
     assert "/usr/bin/containerlab" in create
     assert "--rm" not in create and "--env" not in create
+    assert "type=bind,src=/etc/static/hosts,dst=/etc/hosts,readonly" in create
 
 
 def test_closed_lifecycle_artifact_and_exact_argv() -> None:
